@@ -5,6 +5,32 @@ from typing import List, Dict
 # top priority so real document structure beats regex guessing.
 CHAPTER_MARKER = "@@CHAPTER@@"
 
+# Minimum body length (characters) required before a heading-like line is
+# accepted as a real chapter break. Raised from 100 → 500 (Fix #7) to prevent
+# numbered list items and footnotes from creating micro-chapters.
+_MIN_CHAPTER_BODY = 500
+
+# Abbreviations that are safe to expand regardless of context.
+# Extended list (Fix #8) covers the most common TTS mispronunciations.
+_ABBREVIATIONS = {
+    "Mr.": "Mister",
+    "Mrs.": "Missus",
+    "Ms.": "Miz",
+    "Dr.": "Doctor",
+    "Prof.": "Professor",
+    "St.": "Saint",       # street context is rare in narrative prose
+    "vs.": "versus",
+    "etc.": "etcetera",
+    "e.g.": "for example",
+    "i.e.": "that is",
+    "No.": "Number",
+    "Vol.": "Volume",
+    "Jr.": "Junior",
+    "Sr.": "Senior",
+    "Dept.": "Department",
+    "approx.": "approximately",
+}
+
 
 class TextProcessor:
     """Chapter detection, cleanup, and provider-sized chunking.
@@ -14,11 +40,14 @@ class TextProcessor:
     """
 
     # A heading must be a short standalone line to count as a chapter break.
+    # Fix #7: numeric pattern now requires ≤ 8 words after the number so plain
+    # list items like "1. Mix dry ingredients in a bowl" are not treated as
+    # chapter headings.
     _HEADING_PATTERNS = [
         r"^(chapter|part|book|prologue|epilogue|interlude|appendix)\b[\s\.:—-]*.{0,60}$",
-        r"^\d{1,3}[\.\):]?\s*.{0,60}$",          # "12." / "12) The Storm"
+        r"^\d{1,3}[\.\):]?\s*(?:\S+\s*){0,7}$",   # up to 8 words after the number
         r"^[IVXLCDM]{1,7}[\.\):]?\s*.{0,60}$",    # roman numerals
-        r"^\*{3,}\s*$",                            # *** separators
+        r"^\*{3,}\s*$",                             # *** separators
     ]
 
     def split_by_chapters(self, text: str) -> List[Dict]:
@@ -55,9 +84,10 @@ class TextProcessor:
             stripped = line.strip()
             if stripped and len(stripped) <= 80 and pattern.match(stripped):
                 body = "\n".join(buf).strip()
-                # Require some body so consecutive heading-ish lines don't
-                # create empty chapters.
-                if len(body) > 100:
+                # Fix #7: raised minimum body from 100 → _MIN_CHAPTER_BODY so
+                # numbered list items followed by short paragraphs don't create
+                # spurious chapter breaks.
+                if len(body) > _MIN_CHAPTER_BODY:
                     chapters.append({"title": title, "text": body})
                     buf = []
                     title = stripped
@@ -69,7 +99,7 @@ class TextProcessor:
                 buf.append(line)
 
         body = "\n".join(buf).strip()
-        if len(body) > 100 or not chapters:
+        if len(body) > _MIN_CHAPTER_BODY or not chapters:
             chapters.append({"title": title, "text": body or text.strip()})
         return chapters
 
@@ -83,46 +113,76 @@ class TextProcessor:
                 cleaned.append(p)
         text = "\n\n".join(cleaned)
 
-        # Only expand abbreviations that are safe out of context.
-        for abbr, full in {"Mr.": "Mister", "Mrs.": "Missus", "Ms.": "Miz", "Dr.": "Doctor"}.items():
-            text = re.sub(rf"(?<!\w){re.escape(abbr)}(?=\s[A-Z])", full, text)
+        # Fix #8: expanded abbreviation table; removed the (?=\s[A-Z]) lookahead
+        # so end-of-sentence uses ("Dr. Smith said") are caught too.
+        for abbr, full in _ABBREVIATIONS.items():
+            text = re.sub(
+                rf"(?<!\w){re.escape(abbr)}",
+                full,
+                text,
+            )
         return text.strip()
 
     def chunk_for_provider(self, text: str, max_chars: int) -> List[str]:
         """Split chapter text into provider-sized chunks on paragraph, then
-        sentence boundaries."""
-        if len(text) <= max_chars:
-            return [text]
+        sentence boundaries.
+
+        Fix #6: size is measured in UTF-8 bytes, not code-point count, so
+        multi-byte characters (em-dashes, curly quotes, accented names) don't
+        silently push a chunk over the provider's byte limit (Polly: 3 000 B).
+
+        Fix #4: chunks that are blank after stripping are discarded so
+        whitespace-only text is never sent to a TTS provider.
+        """
+        encoded_len = lambda s: len(s.encode("utf-8"))  # noqa: E731
+
+        if encoded_len(text) <= max_chars:
+            stripped = text.strip()
+            return [stripped] if stripped else []
 
         chunks: List[str] = []
         current = ""
 
-        def flush():
+        def flush() -> None:
             nonlocal current
-            if current.strip():
-                chunks.append(current.strip())
+            stripped = current.strip()
+            # Fix #4: discard empty / whitespace-only chunks.
+            if stripped:
+                chunks.append(stripped)
             current = ""
 
         for para in text.split("\n\n"):
-            if len(current) + len(para) + 2 <= max_chars:
+            if encoded_len(current) + encoded_len(para) + 2 <= max_chars:
                 current += para + "\n\n"
                 continue
             flush()
-            if len(para) <= max_chars:
+            if encoded_len(para) <= max_chars:
                 current = para + "\n\n"
                 continue
             # Paragraph itself too long: split by sentences.
             for sent in re.split(r"(?<=[.!?])\s+", para):
-                if len(current) + len(sent) + 1 <= max_chars:
+                if encoded_len(current) + encoded_len(sent) + 1 <= max_chars:
                     current += sent + " "
                 else:
                     flush()
-                    while len(sent) > max_chars:  # pathological run-on
-                        chunks.append(sent[:max_chars])
-                        sent = sent[max_chars:]
-                    current = sent + " "
+                    # Pathological run-on: hard-split on byte boundary.
+                    encoded = sent.encode("utf-8")
+                    while len(encoded) > max_chars:
+                        # Decode up to max_chars bytes, respecting char boundary.
+                        chunk_bytes = encoded[:max_chars]
+                        chunk_str = chunk_bytes.decode("utf-8", errors="ignore")
+                        if chunk_str.strip():
+                            chunks.append(chunk_str.strip())
+                        encoded = encoded[len(chunk_bytes):]
+                    current = encoded.decode("utf-8") + " "
         flush()
-        return chunks or [text[:max_chars]]
+        # Fix #4: final safety — if everything was whitespace, return a single
+        # hard-truncated chunk rather than an empty list.
+        if not chunks:
+            fallback = text.strip()
+            if fallback:
+                chunks.append(fallback[:max_chars])
+        return chunks
 
     # Backwards compatibility for existing callers/tests
     def split_large_chapter(self, text: str, max_chars: int = 100000) -> List[str]:
