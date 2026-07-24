@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Alembic migration scripts are generated; don't lint them.
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+# Baseline that passes on the preserved prototype code today. Style-modernization
+# rules (e.g. typing.List -> list) are intentionally left off for now so CI is
+# green from day one; tighten these as the code is refactored.
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,15 @@
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+**/dist
+.env
+.env.*
+!.env.example
+**/.DS_Store
+backend/uploads
+backend/outputs
+backend/cache
+data
