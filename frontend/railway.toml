@@ -1,0 +1,20 @@
+# Railway configuration for the FRONTEND service.
+# In Railway dashboard: set this service's Root Directory to "frontend".
+#
+# After the backend service is deployed, set BACKEND_PRIVATE_URL to the
+# backend's Railway private domain:
+#   http://<backend-private-domain>.railway.internal:5000
+# Find it: backend service → Settings → Networking → Private Domain.
+
+[build]
+  builder = "DOCKERFILE"
+  dockerfilePath = "Dockerfile"
+
+[deploy]
+  startCommand = "/docker-entrypoint.sh"
+  healthcheckPath = "/"
+  healthcheckTimeout = 15
+  restartPolicyType = "ON_FAILURE"
+
+[variables]
+  BACKEND_PRIVATE_URL = "http://backend.railway.internal:5000"
