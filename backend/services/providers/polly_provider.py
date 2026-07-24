@@ -8,7 +8,12 @@ from .base import SpeechProvider
 class PollyProvider(SpeechProvider):
     name = "polly"
     display_name = "AWS Polly"
-    max_chars = 2900  # Polly sync limit is 3000; keep headroom
+    # Fix #6: Polly's hard limit is 3 000 UTF-8 bytes, not 3 000 code points.
+    # The chunker now measures bytes, but we also lower the declared max here so
+    # any caller that passes text directly never hits the limit accidentally.
+    # 2 500 gives safe headroom for multi-byte characters (em dashes, accents,
+    # curly quotes) without being wasteful.
+    max_chars = 2500
     paid = True
     cost_per_million_chars = 16.0  # AWS Polly neural list price, approx USD/1M chars
 
