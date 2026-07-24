@@ -35,6 +35,7 @@ from services.file_manager import FileManager
 from storage import get_storage
 
 from observability import configure_logging, init_sentry, new_request_id, request_id_var
+from webhooks import github_bp
 
 load_dotenv()
 configure_logging()
@@ -48,6 +49,7 @@ SYNTHESIZE_RATE_LIMIT = int(os.getenv("SYNTHESIZE_RATE_LIMIT", "30"))
 SYNTHESIZE_RATE_WINDOW = int(os.getenv("SYNTHESIZE_RATE_WINDOW_SECONDS", "60"))
 
 app = Flask(__name__)
+app.register_blueprint(github_bp)
 
 # Scoped CORS (blueprint rescue item), defaults to the local dev origin.
 allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").strip()
@@ -515,3 +517,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     debug = os.getenv("FLASK_ENV") == "development"
     app.run(debug=debug, host=host, port=port)
+
