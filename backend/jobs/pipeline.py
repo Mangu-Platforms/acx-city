@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from time import sleep
 from typing import Callable
 
 from sqlalchemy.orm import Session
@@ -34,6 +35,10 @@ _text = TextProcessor()
 _audio = AudioUtils()
 _cache = SynthesisCache(CACHE_FOLDER)
 
+# Maximum attempts and base delay (seconds) for per-chunk synthesis retries.
+_CHUNK_MAX_ATTEMPTS = 3
+_CHUNK_RETRY_BASE_S = 1.0
+
 
 def _output_key(job: Job, filename: str) -> str:
     """Object-storage key namespaced by org + job (tenant isolation in keys)."""
@@ -50,6 +55,30 @@ def resolve_qc_policy(job: Job) -> str:
 
 class JobCanceled(Exception):
     """Raised when a cooperative cancel is observed mid-run."""
+
+
+def _synthesize_with_retry(provider, chunk: str, voice_id: str, engine: str) -> bytes:
+    """Synthesize one chunk with exponential-backoff retry.
+
+    Retries on any exception up to _CHUNK_MAX_ATTEMPTS times before re-raising.
+    This keeps a single network hiccup from failing the entire job.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_CHUNK_MAX_ATTEMPTS):
+        try:
+            return provider.synthesize(chunk, voice_id, engine)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < _CHUNK_MAX_ATTEMPTS - 1:
+                delay = _CHUNK_RETRY_BASE_S * (2 ** attempt)
+                log.warning(
+                    "chunk synthesis failed (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, _CHUNK_MAX_ATTEMPTS, delay, exc,
+                )
+                sleep(delay)
+    raise RuntimeError(
+        f"chunk synthesis failed after {_CHUNK_MAX_ATTEMPTS} attempts"
+    ) from last_exc
 
 
 def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> bool:
@@ -120,7 +149,9 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                 row.cached_chunks += 1
                 job.cached_chunks += 1
             else:
-                audio = provider.synthesize(chunk, job.voice_id, job.engine)
+                # Fix #1: retry on transient network/provider errors so a single
+                # hiccup doesn't fail the whole job.
+                audio = _synthesize_with_retry(provider, chunk, job.voice_id, job.engine)
                 chunk_files.append(_cache.put(key, audio))
                 job.synthesized_chunks += 1
                 # Cost ledger: only newly synthesized (not cached) chunks are
@@ -132,12 +163,19 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                     )
 
         chapter_path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
-        if len(chunk_files) == 1:
-            with open(chunk_files[0], "rb") as src, open(chapter_path, "wb") as dst:
-                dst.write(src.read())
+        # Fix #3: always go through merge_audio_files (even for 1 chunk) so
+        # every chapter is re-encoded consistently and has the same gap policy.
+        if not _audio.merge_audio_files(chunk_files, chapter_path, gap_duration=400):
+            raise RuntimeError(f"Failed to assemble chapter {i + 1}")
+
+        # Fix #2: normalize each chapter to a consistent loudness target before
+        # QC and before assembling the final book, so volume is uniform across
+        # all chapters regardless of TTS output level.
+        norm_path = chapter_path + ".norm.mp3"
+        if _audio.normalize_audio(chapter_path, norm_path):
+            os.replace(norm_path, chapter_path)
         else:
-            if not _audio.merge_audio_files(chunk_files, chapter_path, gap_duration=400):
-                raise RuntimeError(f"Failed to assemble chapter {i + 1}")
+            log.warning("loudness normalization failed for chapter %d; using raw audio", i + 1)
 
         qc = _audio.qc_check(chapter_path)
         row.duration_s = qc.get("duration_s")
@@ -164,14 +202,9 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         job.progress = 88
         session.commit()
         mp3_path = os.path.join(task_dir, "audiobook.mp3")
-        produced = False
-        if len(chapter_files) == 1:
-            with open(chapter_files[0], "rb") as src, open(mp3_path, "wb") as dst:
-                dst.write(src.read())
-            produced = True
-        elif _audio.merge_audio_files(chapter_files, mp3_path, gap_duration=1500):
-            produced = True
-        if produced:
+        # Fix #3: use ffmpeg concat for the final merge to avoid a second
+        # encode/decode generation-loss cycle through pydub.
+        if _audio.concat_audio_files(chapter_files, mp3_path, gap_ms=1500):
             key = _output_key(job, "audiobook.mp3")
             storage.put_file(key, mp3_path, content_type="audio/mpeg")
             job.output_mp3_key = key
