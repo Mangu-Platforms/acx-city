@@ -1,0 +1,25 @@
+# Railway configuration for the WORKER service.
+# In Railway dashboard: set this service's Root Directory to "backend".
+# Uses the same Dockerfile as the backend — only the start command differs.
+#
+# Attach the same Volume (audiobook-data at /data) as the backend service
+# so both share the same audio outputs and cache.
+
+[build]
+  builder = "DOCKERFILE"
+  dockerfilePath = "Dockerfile"
+
+[deploy]
+  startCommand = "./entrypoint.sh python worker.py"
+  restartPolicyType = "ON_FAILURE"
+  restartPolicyMaxRetries = 5
+
+[variables]
+  ROLE                = "worker"
+  UPLOAD_FOLDER       = "/data/uploads"
+  OUTPUT_FOLDER       = "/data/outputs"
+  CACHE_FOLDER        = "/data/cache"
+  STORAGE_BACKEND     = "local"
+  STORAGE_LOCAL_ROOT  = "/data/storage"
+  LOG_FORMAT          = "json"
+  LOG_LEVEL           = "INFO"
