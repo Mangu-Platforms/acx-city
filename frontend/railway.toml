@@ -13,6 +13,7 @@
 [deploy]
   startCommand = "/docker-entrypoint.sh"
   healthcheckPath = "/"
+  # Railway injects $PORT automatically; nginx honors it via docker-entrypoint.sh.
   healthcheckTimeout = 15
   restartPolicyType = "ON_FAILURE"
 

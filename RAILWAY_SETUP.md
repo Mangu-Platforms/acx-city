@@ -54,7 +54,7 @@ Set these in the Railway dashboard under each service's **Variables** tab.
 |---|---|---|
 | `JWT_SECRET` | `openssl rand -hex 32` | **Required in prod.** Never commit this. |
 | `POSTGRES_PASSWORD` | any strong password | Must match what you used if you overrode the default |
-| `CORS_ALLOW_ORIGINS` | `https://your-frontend-domain.railway.app` | Set after frontend is deployed; use the Railway-generated URL |
+| `CORS_ALLOW_ORIGINS` | `https://your-frontend.up.railway.app,https://your-dashboard.vercel.app` | Comma-separated, no spaces. Include the frontend (Railway) **and** the admin dashboard (Vercel) origins. See [VERCEL_SETUP.md](./VERCEL_SETUP.md). |
 
 ### On `backend` only
 
@@ -106,12 +106,21 @@ Health checks are wired; Railway will restart any service that fails its check.
 # Health check (replace with your backend Railway URL)
 curl https://your-backend.up.railway.app/api/health
 
-# Expected response:
-# {"status": "ok", "db": "ok"}
+# Expected response (abridged):
+# {"status": "healthy", "database": "ok", "providers": [...]}
 ```
 
 Open `https://your-frontend.up.railway.app` — you should see the login/signup
 screen.
+
+---
+
+## Admin dashboard (Vercel)
+
+The Next.js admin dashboard (`dashboard/`) deploys on Vercel, not Railway.
+Once the backend is live, follow [VERCEL_SETUP.md](./VERCEL_SETUP.md) — set
+`NEXT_PUBLIC_API_URL` to the backend's public URL and add the Vercel origin to
+the backend's `CORS_ALLOW_ORIGINS` (Step 4 above).
 
 ---
 

@@ -27,9 +27,11 @@ RUN touch /var/run/nginx.pid \
                             /usr/share/nginx/html /etc/nginx/conf.d
 USER nginx
 
+# Railway injects $PORT at runtime; default to 8080 for local/compose.
+ENV PORT=8080
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1
+    CMD wget -qO- "http://localhost:${PORT:-8080}/" >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
