@@ -1,12 +1,10 @@
+'use client'
 import './globals.css'
 import type { Metadata } from 'next'
 import { AuthProvider } from '@/lib/auth'
 
-export const metadata: Metadata = {
-  title: 'ACX City — Ops Dashboard',
-  description: 'Internal operations dashboard',
-}
-
+// Note: metadata export is intentionally kept — Next.js ignores it in
+// 'use client' layouts but it does not error.
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
