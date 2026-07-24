@@ -1,0 +1,99 @@
+# Railway deployment configuration for ACX City
+# Docs: https://docs.railway.app/reference/config-as-code
+#
+# Services defined here:
+#   backend  — Flask/Gunicorn API (runs Alembic migrations on start)
+#   worker   — durable job worker (same image, different CMD)
+#   frontend — React SPA served by nginx, proxies /api to backend
+#
+# The database is a Railway-managed Postgres service — add it via the Railway
+# dashboard (New Service → Database → PostgreSQL). Railway automatically injects
+# $DATABASE_URL into every service in the same project.
+#
+# backend + worker share a Railway Volume mounted at /data so synthesized
+# audio, uploads, and cache are visible to both. Create the volume in the
+# dashboard and attach it to both services at /data.
+
+[build]
+  builder = "DOCKERFILE"
+
+# ---------------------------------------------------------------------------
+# backend
+# ---------------------------------------------------------------------------
+[[services]]
+  name = "backend"
+  source = "backend"          # build context = ./backend (uses backend/Dockerfile)
+
+  [services.build]
+    dockerfilePath = "backend/Dockerfile"
+    buildContext   = "backend"
+
+  [services.deploy]
+    startCommand  = "./entrypoint.sh gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --threads 4 --timeout 3600 wsgi:app"
+    healthcheckPath    = "/api/health"
+    healthcheckTimeout = 30
+    restartPolicyType  = "ON_FAILURE"
+    restartPolicyMaxRetries = 5
+
+  [services.variables]
+    ROLE           = "api"
+    HOST           = "0.0.0.0"
+    PORT           = "5000"
+    # DATABASE_URL is auto-injected by Railway from the Postgres service.
+    # POSTGRES_PASSWORD, JWT_SECRET, CORS_ALLOW_ORIGINS etc. set in dashboard.
+    UPLOAD_FOLDER  = "/data/uploads"
+    OUTPUT_FOLDER  = "/data/outputs"
+    CACHE_FOLDER   = "/data/cache"
+    STORAGE_BACKEND     = "local"
+    STORAGE_LOCAL_ROOT  = "/data/storage"
+    LOG_FORMAT     = "json"
+    LOG_LEVEL      = "INFO"
+
+# ---------------------------------------------------------------------------
+# worker
+# ---------------------------------------------------------------------------
+[[services]]
+  name = "worker"
+
+  [services.build]
+    dockerfilePath = "backend/Dockerfile"
+    buildContext   = "backend"
+
+  [services.deploy]
+    startCommand = "./entrypoint.sh python worker.py"
+    restartPolicyType       = "ON_FAILURE"
+    restartPolicyMaxRetries = 5
+
+  [services.variables]
+    ROLE           = "worker"
+    # DATABASE_URL auto-injected.
+    UPLOAD_FOLDER  = "/data/uploads"
+    OUTPUT_FOLDER  = "/data/outputs"
+    CACHE_FOLDER   = "/data/cache"
+    STORAGE_BACKEND     = "local"
+    STORAGE_LOCAL_ROOT  = "/data/storage"
+    LOG_FORMAT     = "json"
+    LOG_LEVEL      = "INFO"
+
+# ---------------------------------------------------------------------------
+# frontend
+# ---------------------------------------------------------------------------
+[[services]]
+  name = "frontend"
+
+  [services.build]
+    dockerfilePath = "frontend/Dockerfile"
+    buildContext   = "frontend"
+
+  [services.deploy]
+    startCommand       = "/docker-entrypoint.sh"
+    healthcheckPath    = "/"
+    healthcheckTimeout = 15
+    restartPolicyType  = "ON_FAILURE"
+
+  # BACKEND_PRIVATE_URL is the Railway private-network URL of the backend
+  # service. Set this in the dashboard after the backend service is created:
+  #   http://<backend-private-domain>:5000
+  # The nginx entrypoint substitutes it into the config at container start.
+  [services.variables]
+    BACKEND_PRIVATE_URL = "http://backend.railway.internal:5000"
