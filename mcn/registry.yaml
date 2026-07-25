@@ -34,7 +34,7 @@ repos:
             UPLOAD_FOLDER: /data/uploads
             OUTPUT_FOLDER: /data/outputs
             CACHE_FOLDER: /data/cache
-            CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
+            CORS_ALLOW_ORIGINS: ${url:railway:frontend},${url:vercel:dashboard}
         worker:
           env:
             JWT_SECRET: ${secret:JWT_SECRET}

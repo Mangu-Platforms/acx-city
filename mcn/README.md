@@ -35,9 +35,17 @@ Secrets) and agents can run the provisioner unattended.
 ```bash
 cd mcn
 pip install pyyaml
-python provision.py --dry-run   # preview the plan
-python provision.py             # push everything
+python3 bootstrap_railway.py --dry-run   # preview Railway project creation
+python3 bootstrap_railway.py            # create project/services/volumes/DBs
+python provision.py --dry-run            # preview the env-var plan
+python provision.py                      # push everything
 ```
+
+`bootstrap_railway.py` replaces every Railway dashboard click: it creates the
+`acx-city` project, the three repo services, Postgres, MinIO object storage
+(Railway volumes cannot be shared between services, so backend and worker use
+S3-mode storage instead of a shared disk), volumes, public domains, and the
+cross-service reference variables. It is idempotent — rerun any time.
 
 First run after creating fresh Railway/Vercel projects: the cross-referenced
 URLs (`CORS_ALLOW_ORIGINS`, `NEXT_PUBLIC_API_URL`) show as `<PENDING>` until
