@@ -34,7 +34,8 @@ Browser (React SPA)          Vercel (Next.js)
 | Flask API (`backend/app.py`) | Railway | REST API, auth, job enqueue, signed downloads |
 | Worker (`backend/worker.py`) | Railway | Durable job consumer — TTS synthesis, QC, assembly |
 | PostgreSQL | Railway managed | System of record — all jobs, users, orgs, usage |
-| Shared Volume `/data` | Railway Volume | Audio outputs, uploads, cache (shared by API + worker) |
+| Object storage (MinIO/S3) | Railway service | Durable audio outputs shared by API + worker (`STORAGE_BACKEND=s3`) |
+| Per-service Volume `/data` | Railway Volume | Scratch space (uploads/cache) — Railway volumes cannot be shared between services |
 | Ops Dashboard (`dashboard/`) | Vercel | Internal admin — job queue, QC, health, usage |
 | GitHub App | github.com | CI status, deployment badges, PR labels, webhook events |
 
@@ -91,12 +92,14 @@ Browser (React SPA)          Vercel (Next.js)
 ## Deployment
 
 ### Railway (`railway.toml`)
-- 3 services: `backend`, `worker`, `frontend`
+- 3 repo services: `backend`, `worker`, `frontend` (+ `postgres`, `minio`)
 - `backend` runs `alembic upgrade head` on start via `entrypoint.sh` (ROLE=api)
 - `worker` runs `python worker.py` (ROLE=worker)
-- Both share a Railway Volume mounted at `/data`
-- Postgres auto-injects `DATABASE_URL`
-- See `RAILWAY_SETUP.md` for step-by-step instructions
+- Volumes are single-service on Railway: backend and worker each get a
+  private `/data` scratch volume and share audio via S3-mode storage (MinIO)
+- `DATABASE_URL` flows to backend/worker as a reference variable
+- Scripted setup: `python3 mcn/bootstrap_railway.py` (see `mcn/README.md`);
+  manual fallback in `RAILWAY_SETUP.md`
 
 ### Vercel (ops dashboard)
 - Root directory: `dashboard/`

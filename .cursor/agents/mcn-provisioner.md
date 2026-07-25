@@ -24,16 +24,24 @@ Topology you are provisioning:
 Standard workflow when invoked:
 1. Resolve credentials: `RAILWAY_TOKEN` and `VERCEL_TOKEN` from
    `mcn/.env.local` or the process environment (Cloud Agent secrets).
-   If neither is present, run `python3 provision.py --dry-run` anyway,
-   report the plan, and tell the user to add the tokens as Cursor Cloud
-   Agent secrets (Dashboard → Cloud Agents → Secrets) — do not stop
-   without producing the dry-run output.
-2. `cd mcn && pip install pyyaml && python3 provision.py --dry-run` —
-   always preview first and inspect for `<MISSING:...>` / `<PENDING:...>`.
-3. `python3 provision.py` — push. `<PENDING>` URL warnings mean a service
+   If neither is present, run the `--dry-run` modes anyway, report the
+   plan, and tell the user to add the tokens as Cursor Cloud Agent
+   secrets (Dashboard → Cloud Agents → Secrets) — do not stop without
+   producing the dry-run output.
+2. If the Railway project does not exist yet:
+   `cd mcn && python3 bootstrap_railway.py --dry-run`, then without
+   `--dry-run`. It idempotently creates the project, repo services
+   (backend/worker/frontend), postgres, minio, volumes, domains, and
+   reference variables. If it reports a GitHub repo access error, the
+   user must install the Railway GitHub App on the repo once.
+   Railway volumes are single-service — never try to share one; audio
+   flows through MinIO/S3 (`STORAGE_BACKEND=s3`).
+3. `pip install pyyaml && python3 provision.py --dry-run` — always
+   preview first and inspect for `<MISSING:...>` / `<PENDING:...>`.
+4. `python3 provision.py` — push. `<PENDING>` URL warnings mean a service
    has no public domain yet: deploy it once, rerun, then redeploy the
    dashboard so the baked-in API URL updates.
-4. Verify: fetch the dashboard URL and the backend `/api/health` endpoint;
+5. Verify: fetch the dashboard URL and the backend `/api/health` endpoint;
    check Vercel build logs on failure.
 
 Hard rules:

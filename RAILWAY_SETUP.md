@@ -29,18 +29,33 @@ Postgres) on [Railway](https://railway.app).
 
 ---
 
-## Step 3 — Create a shared Volume (backend ↔ worker)
+## Step 3 — Storage (backend ↔ worker)
 
-The backend and worker must share the same `/data` directory so synthesized
-audio produced by the worker is accessible to the API for downloads.
+> ⚠️ Railway volumes attach to exactly **one** service — a volume cannot be
+> shared between backend and worker (confirmed platform limitation). Do not
+> try to mount one volume on both; use S3-mode storage instead.
 
-1. Click **+ New** → **Volume**
-2. Name it `audiobook-data`
-3. **Attach it to the `backend` service** → mount path `/data`
-4. **Attach it to the `worker` service** → mount path `/data`
+1. Give `backend` and `worker` each their **own** Volume mounted at `/data`
+   (scratch space for uploads/cache during synthesis).
+2. Deploy an S3-compatible store the two services share:
+   - **+ New** → **Template** → **MinIO** (or use Supabase Storage / R2 / S3)
+   - Create a bucket named `audiobook-data`
+3. On **both** `backend` and `worker`, set:
 
-> ⚠️ Both services MUST point to the same volume. If they have separate volumes
-> the API will return 404 on downloads.
+| Variable | Value |
+|---|---|
+| `STORAGE_BACKEND` | `s3` |
+| `STORAGE_S3_ENDPOINT` | the MinIO public URL (or your S3 endpoint) |
+| `STORAGE_S3_BUCKET` | `audiobook-data` |
+| `STORAGE_S3_ACCESS_KEY` / `STORAGE_S3_SECRET_KEY` | from the MinIO service |
+
+The worker uploads finished audio through `backend/storage/s3.py` and the API
+issues presigned download URLs against the same bucket — no shared filesystem
+needed.
+
+> Prefer zero clicks? `python3 mcn/bootstrap_railway.py` creates the project,
+> all five services (including Postgres and MinIO), volumes, domains, and the
+> wiring above via the Railway API. See `mcn/README.md`.
 
 ---
 
