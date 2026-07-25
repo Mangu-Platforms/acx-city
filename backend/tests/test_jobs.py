@@ -103,8 +103,10 @@ def test_orphan_recovery_requeues_dead_worker_job(engine):
 
 def test_restart_resumes_completed_chapters(engine, stub_pipeline):
     """A job partially done in a prior attempt keeps finished chapters."""
-    src = ("Chapter 1\n" + ("The first chapter has plenty of words here. " * 8)
-           + "\n\nChapter 2\n" + ("The second chapter also has plenty of words. " * 8))
+    # Chapter bodies must exceed the detector's _MIN_CHAPTER_BODY (500 chars)
+    # or "Chapter 2" is folded into chapter 1 instead of starting a new one.
+    src = ("Chapter 1\n" + ("The first chapter has plenty of words here. " * 15)
+           + "\n\nChapter 2\n" + ("The second chapter also has plenty of words. " * 15))
     with session_scope() as s:
         jid = _seed_job(s, source_text=src)
     # Simulate: first chapter already done on a previous (crashed) attempt.
