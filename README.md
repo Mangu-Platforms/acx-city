@@ -201,6 +201,11 @@ Remaining items, in rough priority order:
 - **Metrics & tracing** beyond logs (Prometheus/OpenTelemetry).
 - **Billing integration** (Stripe per MANGU) to turn the cost ledger into invoices.
 - **RLS** if/when Supabase becomes the primary database (separate ADR).
+- **MCP network (MCN)**: `backend/mcp_server.py` is the first node — a
+  streamable-HTTP MCP server (gated by `MCP_ENABLED` + `MCP_API_KEY`, see
+  `backend/railway.mcp.toml`) exposing read-only tools: `acx_health`,
+  `acx_list_jobs`, `acx_get_job`, `acx_list_organizations`, `acx_usage`.
+  Next: write tools (cancel/approve) and sibling repos joining the network.
 
 See the Revamp Blueprint for the full target architecture and delivery roadmap.
 
