@@ -1,0 +1,56 @@
+# MCN registry — single source of truth for every service's environment.
+# Add a repo/service here, run `python provision.py`, done. No dashboards.
+#
+# Value syntax:
+#   literal string          used as-is
+#   ${secret:NAME}          generated once (see `secrets:`), reused forever
+#   ${url:railway:SVC}      resolved to the service's public Railway URL
+#   ${url:vercel:PROJ}      resolved to the Vercel project's production URL
+#   ${local:NAME}           taken from mcn/.env.local (manual override)
+
+network:
+  name: acx-mcn
+
+# Generated on first run, persisted to mcn/.secrets.json (gitignored).
+secrets:
+  JWT_SECRET: {bytes: 32}
+  STORAGE_SIGNING_SECRET: {bytes: 32}
+  MCP_API_KEY: {bytes: 32}
+
+repos:
+  acx-city:
+    railway:
+      project: acx-city
+      # DATABASE_URL is injected by Railway's Postgres plugin — never set here.
+      services:
+        backend:
+          env:
+            AUTH_MODE: legacy
+            JWT_SECRET: ${secret:JWT_SECRET}
+            STORAGE_SIGNING_SECRET: ${secret:STORAGE_SIGNING_SECRET}
+            LOG_FORMAT: json
+            LOG_LEVEL: INFO
+            QC_POLICY: warn
+            UPLOAD_FOLDER: /data/uploads
+            OUTPUT_FOLDER: /data/outputs
+            CACHE_FOLDER: /data/cache
+            CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
+        worker:
+          env:
+            JWT_SECRET: ${secret:JWT_SECRET}
+            LOG_FORMAT: json
+            LOG_LEVEL: INFO
+            UPLOAD_FOLDER: /data/uploads
+            OUTPUT_FOLDER: /data/outputs
+            CACHE_FOLDER: /data/cache
+        mcp:
+          env:
+            MCP_ENABLED: "true"
+            MCP_API_KEY: ${secret:MCP_API_KEY}
+            LOG_FORMAT: json
+    vercel:
+      projects:
+        dashboard:
+          project: acx-city-dashboard
+          env:
+            NEXT_PUBLIC_API_URL: ${url:railway:backend}
