@@ -29,7 +29,7 @@ repos:
         # Combined API + worker service (Railway volumes mount to exactly one
         # service, so both processes share this service and its /data volume;
         # see backend/railway.combined.toml).
-        acx-city:
+        backend:
           env:
             # Modern Railway does not auto-inject DATABASE_URL into app
             # services — it must be a reference variable to the Postgres
@@ -41,6 +41,10 @@ repos:
             LOG_FORMAT: json
             LOG_LEVEL: INFO
             QC_POLICY: warn
+            # Railway mounts volumes owned by root; the image runs as a
+            # non-root user, so tell Railway to run the container as uid 0
+            # (https://docs.railway.com/volumes — Permissions).
+            RAILWAY_RUN_UID: "0"
             PORT: "5000"
             UPLOAD_FOLDER: /data/uploads
             OUTPUT_FOLDER: /data/outputs
@@ -54,7 +58,7 @@ repos:
         # private network (frontend/nginx.conf.template).
         frontend:
           env:
-            BACKEND_PRIVATE_URL: http://acx-city.railway.internal:5000
+            BACKEND_PRIVATE_URL: http://backend.railway.internal:5000
     vercel:
       projects:
         dashboard:
@@ -62,4 +66,4 @@ repos:
           # project is `acx-city`; `acx-city-gmlo` is a duplicate import.
           project: acx-city
           env:
-            NEXT_PUBLIC_API_URL: ${url:railway:acx-city}
+            NEXT_PUBLIC_API_URL: ${url:railway:backend}
