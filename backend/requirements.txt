@@ -14,7 +14,7 @@ SQLAlchemy==2.0.35
 alembic==1.13.3
 psycopg[binary]==3.2.3
 bcrypt==4.2.0
-PyJWT==2.9.0
+PyJWT==2.10.1
 pytest==8.3.2
 mcp==1.28.1
 # Optional: error monitoring (enabled only when SENTRY_DSN is set).
