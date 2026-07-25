@@ -8,7 +8,7 @@ Werkzeug==3.0.3
 requests==2.32.3
 pdfminer.six==20240706
 python-docx==1.1.2
-edge-tts==6.1.12
+edge-tts==7.2.8
 gunicorn==22.0.0
 SQLAlchemy==2.0.35
 alembic==1.13.3
