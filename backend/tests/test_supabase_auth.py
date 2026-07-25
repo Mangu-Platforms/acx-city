@@ -7,7 +7,10 @@ import pytest
 SECRET = "supabase-unit-secret"
 
 
-def _sb_token(sub="sb-user-1", email="renee@mangu.com", exp_delta=3600, aud="authenticated", secret=SECRET):
+SB_SUB = "7b1d3f6a-9c2e-4b8f-a1d0-5e6f7a8b9c0d"
+
+
+def _sb_token(sub=SB_SUB, email="renee@mangu.com", exp_delta=3600, aud="authenticated", secret=SECRET):
     return jwt.encode(
         {"sub": sub, "email": email, "aud": aud, "exp": int(time.time()) + exp_delta,
          "user_metadata": {"full_name": "Renee M"}},
@@ -41,7 +44,7 @@ def test_provisioning_is_idempotent(supabase_client):
     r2 = supabase_client.get("/api/auth/me", headers=h)
     assert r2.status_code == 200
     # Same user id both times (the Supabase subject).
-    assert r2.get_json()["user"]["id"] == "sb-user-1"
+    assert r2.get_json()["user"]["id"] == SB_SUB
 
 
 def test_expired_token_rejected(supabase_client):
