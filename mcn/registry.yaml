@@ -26,9 +26,9 @@ repos:
       # it is `acx-city` (plus the managed Postgres service).
       project: tranquil-fascination
       services:
-        # Single combined service today (ROLE defaults to api). It also
-        # carries the worker env so a split into separate backend/worker/mcp
-        # services later only requires adding blocks here.
+        # Combined API + worker service (Railway volumes mount to exactly one
+        # service, so both processes share this service and its /data volume;
+        # see backend/railway.combined.toml).
         acx-city:
           env:
             # Modern Railway does not auto-inject DATABASE_URL into app
@@ -41,12 +41,20 @@ repos:
             LOG_FORMAT: json
             LOG_LEVEL: INFO
             QC_POLICY: warn
+            PORT: "5000"
             UPLOAD_FOLDER: /data/uploads
             OUTPUT_FOLDER: /data/outputs
             CACHE_FOLDER: /data/cache
+            STORAGE_BACKEND: local
+            STORAGE_LOCAL_ROOT: /data/storage
             CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
             MCP_ENABLED: "true"
             MCP_API_KEY: ${secret:MCP_API_KEY}
+        # React SPA behind nginx; proxies /api to the backend over Railway's
+        # private network (frontend/nginx.conf.template).
+        frontend:
+          env:
+            BACKEND_PRIVATE_URL: http://acx-city.railway.internal:5000
     vercel:
       projects:
         dashboard:
