@@ -111,14 +111,28 @@ def stub_pipeline(monkeypatch):
             f.write(b"M4Bfake")
         return True
 
+    def fake_concat(paths, out, gap_ms=1500):
+        with open(out, "wb") as f:
+            f.write(b"ID3concat")
+        return True
+
+    # Normalization "fails" gracefully: the pipeline logs a warning and keeps
+    # the raw chapter audio, which is exactly what we want offline.
+    def fake_normalize(inp, out, target_dBFS=None):
+        return False
+
     monkeypatch.setattr(AudioUtils, "merge_audio_files", staticmethod(fake_merge))
     monkeypatch.setattr(AudioUtils, "qc_check", staticmethod(fake_qc))
     monkeypatch.setattr(AudioUtils, "export_m4b", staticmethod(fake_m4b))
+    monkeypatch.setattr(AudioUtils, "concat_audio_files", staticmethod(fake_concat))
+    monkeypatch.setattr(AudioUtils, "normalize_audio", staticmethod(fake_normalize))
     # Patch the already-instantiated pipeline singletons too.
     import jobs.pipeline as pl
     monkeypatch.setattr(pl._audio, "merge_audio_files", fake_merge)
     monkeypatch.setattr(pl._audio, "qc_check", fake_qc)
     monkeypatch.setattr(pl._audio, "export_m4b", fake_m4b)
+    monkeypatch.setattr(pl._audio, "concat_audio_files", fake_concat)
+    monkeypatch.setattr(pl._audio, "normalize_audio", fake_normalize)
     monkeypatch.setattr(pl._registry.get("edge"), "is_available", lambda: True)
     monkeypatch.setattr(pl._registry.get("edge"), "synthesize",
                         lambda text, voice_id, engine="neural": b"ID3fake" + text[:8].encode())
