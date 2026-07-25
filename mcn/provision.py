@@ -10,11 +10,15 @@ One-time setup (mcn/.env.local, gitignored):
     VERCEL_TOKEN=...      # vercel.com → Settings → Tokens
     VERCEL_TEAM_ID=...    # optional, only for team accounts
 
+The same three variables are also read from the process environment
+(e.g. CI secrets or Cursor Cloud Agent secrets); .env.local overrides.
+
 Secrets in registry.yaml are generated on first run and persisted to
 mcn/.secrets.json (gitignored) so reruns are idempotent.
 """
 import argparse
 import json
+import os
 import re
 import secrets as pysecrets
 import sys
@@ -29,7 +33,10 @@ VERCEL_API = "https://api.vercel.com"
 
 
 def load_env_local():
-    env = {}
+    # Process environment (e.g. CI or Cursor Cloud Agent secrets) works as a
+    # fallback; mcn/.env.local wins when both define the same key.
+    env = {k: os.environ[k] for k in ("RAILWAY_TOKEN", "VERCEL_TOKEN", "VERCEL_TEAM_ID")
+           if os.environ.get(k)}
     p = HERE / ".env.local"
     if p.exists():
         for line in p.read_text().splitlines():

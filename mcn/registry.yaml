@@ -51,6 +51,7 @@ repos:
     vercel:
       projects:
         dashboard:
-          project: acx-city-dashboard
+          # Must match the actual Vercel project name (vercel.com → project → Settings).
+          project: acx-city
           env:
             NEXT_PUBLIC_API_URL: ${url:railway:backend}

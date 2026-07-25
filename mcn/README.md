@@ -25,6 +25,11 @@ VERCEL_TOKEN=...    # vercel.com → Settings → Tokens
 
 That is the entire manual surface, forever.
 
+The two tokens are also picked up from the process environment when
+`.env.local` is absent — set `RAILWAY_TOKEN` and `VERCEL_TOKEN` as CI
+secrets or Cursor Cloud Agent secrets (Cursor Dashboard → Cloud Agents →
+Secrets) and agents can run the provisioner unattended.
+
 ## Usage
 
 ```bash
