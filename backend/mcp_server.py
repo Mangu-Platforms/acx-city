@@ -18,6 +18,7 @@ from __future__ import annotations
 import hmac
 import os
 import sys
+import uuid as _uuid
 from typing import Optional
 
 from sqlalchemy import func, select, text
@@ -38,6 +39,16 @@ mcp = FastMCP(
     port=int(os.getenv("PORT", os.getenv("MCP_PORT", "8765"))),
     stateless_http=True,
 )
+
+
+def _valid_uuid(value: str) -> bool:
+    """GUID columns are native uuid on Postgres; reject bad input up front so
+    lookups return a friendly error instead of a database DataError."""
+    try:
+        _uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _job_dict(job: Job, chapters: bool = False) -> dict:
@@ -113,6 +124,9 @@ def acx_list_jobs(
             valid = ", ".join(s.value for s in JobStatus)
             return {"error": f"Unknown status '{status}'. Valid: {valid}"}
     if organization_id:
+        if not _valid_uuid(organization_id):
+            return {"error": f"'{organization_id}' is not a valid organization UUID. "
+                             "Use acx_list_organizations to browse ids."}
         stmt = stmt.where(Job.organization_id == organization_id)
     with session_scope() as s:
         jobs = s.execute(stmt).scalars().all()
@@ -126,6 +140,8 @@ def acx_get_job(job_id: str) -> dict:
     Args:
         job_id: the job UUID (from acx_list_jobs).
     """
+    if not _valid_uuid(job_id):
+        return {"error": f"'{job_id}' is not a valid job UUID. Use acx_list_jobs to browse ids."}
     with session_scope() as s:
         job = s.get(Job, job_id)
         if job is None:
@@ -167,6 +183,9 @@ def acx_usage(organization_id: str, period: Optional[str] = None) -> dict:
         organization_id: org UUID (from acx_list_organizations).
         period: month as YYYY-MM. Omit for the current month.
     """
+    if not _valid_uuid(organization_id):
+        return {"error": f"'{organization_id}' is not a valid organization UUID. "
+                         "Use acx_list_organizations to browse ids."}
     with session_scope() as s:
         org = s.get(Organization, organization_id)
         if org is None:
