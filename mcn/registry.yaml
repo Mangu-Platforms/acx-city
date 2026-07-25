@@ -7,6 +7,8 @@
 #   ${url:railway:SVC}      resolved to the service's public Railway URL
 #   ${url:vercel:PROJ}      resolved to the Vercel project's production URL
 #   ${local:NAME}           taken from mcn/.env.local (manual override)
+#   ${{Service.VAR}}        Railway reference variable, resolved by Railway
+#                           itself at deploy time (passed through verbatim)
 
 network:
   name: acx-mcn
@@ -20,37 +22,48 @@ secrets:
 repos:
   acx-city:
     railway:
-      project: acx-city
-      # DATABASE_URL is injected by Railway's Postgres plugin — never set here.
+      # Railway kept its auto-generated project name; the app service inside
+      # it is `acx-city` (plus the managed Postgres service).
+      project: tranquil-fascination
       services:
+        # Combined API + worker service (Railway volumes mount to exactly one
+        # service, so both processes share this service and its /data volume;
+        # see backend/railway.combined.toml).
         backend:
           env:
+            # Modern Railway does not auto-inject DATABASE_URL into app
+            # services — it must be a reference variable to the Postgres
+            # service, resolved by Railway at deploy time.
+            DATABASE_URL: "${{Postgres.DATABASE_URL}}"
             AUTH_MODE: legacy
             JWT_SECRET: ${secret:JWT_SECRET}
             STORAGE_SIGNING_SECRET: ${secret:STORAGE_SIGNING_SECRET}
             LOG_FORMAT: json
             LOG_LEVEL: INFO
             QC_POLICY: warn
+            # Railway mounts volumes owned by root; the image runs as a
+            # non-root user, so tell Railway to run the container as uid 0
+            # (https://docs.railway.com/volumes — Permissions).
+            RAILWAY_RUN_UID: "0"
+            PORT: "5000"
             UPLOAD_FOLDER: /data/uploads
             OUTPUT_FOLDER: /data/outputs
             CACHE_FOLDER: /data/cache
+            STORAGE_BACKEND: local
+            STORAGE_LOCAL_ROOT: /data/storage
             CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
-        worker:
-          env:
-            JWT_SECRET: ${secret:JWT_SECRET}
-            LOG_FORMAT: json
-            LOG_LEVEL: INFO
-            UPLOAD_FOLDER: /data/uploads
-            OUTPUT_FOLDER: /data/outputs
-            CACHE_FOLDER: /data/cache
-        mcp:
-          env:
             MCP_ENABLED: "true"
             MCP_API_KEY: ${secret:MCP_API_KEY}
-            LOG_FORMAT: json
+        # React SPA behind nginx; proxies /api to the backend over Railway's
+        # private network (frontend/nginx.conf.template).
+        frontend:
+          env:
+            BACKEND_PRIVATE_URL: http://backend.railway.internal:5000
     vercel:
       projects:
         dashboard:
-          project: acx-city-dashboard
+          # Next.js ops dashboard (rootDirectory: dashboard/). The canonical
+          # project is `acx-city`; `acx-city-gmlo` is a duplicate import.
+          project: acx-city
           env:
             NEXT_PUBLIC_API_URL: ${url:railway:backend}

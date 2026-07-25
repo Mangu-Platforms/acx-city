@@ -29,18 +29,26 @@ Postgres) on [Railway](https://railway.app).
 
 ---
 
-## Step 3 — Create a shared Volume (backend ↔ worker)
+## Step 3 — Volume and the combined API + worker service
 
 The backend and worker must share the same `/data` directory so synthesized
 audio produced by the worker is accessible to the API for downloads.
 
-1. Click **+ New** → **Volume**
-2. Name it `audiobook-data`
-3. **Attach it to the `backend` service** → mount path `/data`
-4. **Attach it to the `worker` service** → mount path `/data`
+> ⚠️ Railway mounts a volume to **exactly one service** — a volume cannot be
+> shared between two services. So with the default local storage backend, the
+> API and worker run as **one combined service** using
+> [`backend/railway.combined.toml`](./backend/railway.combined.toml), which
+> starts both processes via `start_combined.sh`.
 
-> ⚠️ Both services MUST point to the same volume. If they have separate volumes
-> the API will return 404 on downloads.
+1. On the app service: **Settings** → set **Root Directory** to `backend` and
+   **Config File** to `backend/railway.combined.toml`
+2. Click **+ New** → **Volume**, name it `audiobook-data`, attach it to the
+   service at mount path `/data`
+
+To run the worker as a separate Railway service (e.g. to scale it
+independently), switch to object storage first: set `STORAGE_BACKEND=s3` on
+both services so they no longer need a shared filesystem, then deploy the
+worker with `backend/railway.worker.toml`.
 
 ---
 

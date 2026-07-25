@@ -59,6 +59,8 @@ def http(url, token, method="GET", body=None, team=None):
         url += ("&" if "?" in url else "?") + f"teamId={team}"
     req = urllib.request.Request(url, method=method)
     req.add_header("Authorization", f"Bearer {token}")
+    # Railway's API sits behind Cloudflare, which 403s urllib's default UA.
+    req.add_header("User-Agent", "mcn-provisioner/1.0")
     data = None
     if body is not None:
         req.add_header("Content-Type", "application/json")
