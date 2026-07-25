@@ -21,13 +21,16 @@ target_metadata = Base.metadata
 
 
 def render_item(type_, obj, autogen_context):
-    """Render our custom GUID type as a plain String in migrations so generated
-    migration files don't import the app package."""
+    """Render our custom GUID type as ``db.base.GUID`` in generated migrations.
+
+    GUID maps to native UUID on PostgreSQL and String(36) elsewhere. Rendering
+    it as a plain String (the old behavior) made child columns varchar while
+    parent PKs were uuid, so foreign keys failed to create on Postgres."""
     from db.base import GUID
 
     if type_ == "type" and isinstance(obj, GUID):
-        autogen_context.imports.add("import sqlalchemy as sa")
-        return "sa.String(length=36)"
+        autogen_context.imports.add("import db.base")
+        return "db.base.GUID(length=36)"
     return False
 
 
