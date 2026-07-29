@@ -27,12 +27,23 @@ class SafetyDecision:
         }
 
 
+# Verb forms are matched with optional -s/-ed/-ing suffixes (a bare "sound"
+# does not match "sounds" under \b...\b, which is exactly how the original
+# version of this list was bypassed by simple pluralization).
+_VOICE_VERB = r"(?:voice|sound|speak|talk|narrate)(?:s|ed|ing)?"
+
 _IMPERSONATION_PATTERNS = [
-    re.compile(r"\b(?:clone|copy|duplicate|recreate|impersonate|imitate)\b.{0,40}\b(?:voice|speaker|narrator|person)\b", re.I),
-    re.compile(r"\b(?:voice|sound|speak|talk|narrate)\s+(?:exactly\s+)?(?:like|as)\b", re.I),
+    re.compile(r"\b(?:clone|copy|duplicate|recreate|impersonat\w*|imitat\w*|mimic\w*)\b.{0,40}\b(?:voice|speaker|narrator|person)\b", re.I),
+    re.compile(rf"\b{_VOICE_VERB}\s+(?:exactly\s+)?(?:like|as)\b", re.I),
     re.compile(r"\b(?:the\s+)?voice\s+of\b", re.I),
     re.compile(r"\bcelebrity\s+voice\b", re.I),
     re.compile(r"\bdeepfake\b", re.I),
+    re.compile(r"\b(?:impression|impersonation)s?\s+of\b", re.I),
+    re.compile(r"\bdo(?:es|ing)?\s+an?\b.{0,20}\bimpression\b", re.I),
+    re.compile(r"\bin\s+the\s+(?:style|voice)\s+of\b", re.I),
+    # Indirect person references that name no verb at all: "the guy from...",
+    # "the actor who played...", "the narrator behind...".
+    re.compile(r"\bthe\s+(?:guy|girl|man|woman|person|actor|actress|narrator|voice\s*actor|character|dude)\s+(?:from|who|that|behind|in)\b", re.I),
 ]
 
 # Descriptions are allowed to use physical/performance characteristics.  These
@@ -47,17 +58,94 @@ _IDENTITY_INTENT_TERMS = {
     "unauthorized voice",
 }
 
+# Trivial digit/symbol-for-letter evasions ("s0unds l1ke") are undone before
+# any keyword match runs. This is a heuristic first line of defense, not a
+# complete evasion-proof classifier -- letter-spaced evasion ("s o u n d s")
+# is a known residual gap, which is part of why the proper-noun heuristic
+# below and the render-time safety checks exist as additional layers.
+_LEET_TRANSLATION = str.maketrans({
+    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s",
+})
+
+
+def _normalize_for_screening(text: str) -> str:
+    return text.lower().translate(_LEET_TRANSLATION)
+
+
+# A synthetic voice is described by acoustic characteristics (age, pitch,
+# warmth, accent strength...) -- it never needs to *name* a real person. So a
+# capitalized, name-shaped phrase (two or three Title-Case words) appearing
+# near voice/performance vocabulary is treated as a likely named-person
+# request and blocked by default, rather than trying to maintain a celebrity
+# name list (which can never be complete). The stoplist below keeps ordinary
+# Title-Case descriptions ("Warm British Narrator") from being misread as a
+# name; anything not entirely made of these common description words is
+# treated as name-shaped.
+_DESCRIPTIVE_WORDS = {
+    "warm", "deep", "young", "old", "older", "middle", "aged", "male", "female",
+    "british", "american", "australian", "irish", "scottish", "southern",
+    "narrator", "narration", "voice", "character", "performance", "style",
+    "gravelly", "smooth", "husky", "bright", "soft", "gentle", "strong",
+    "storyteller", "announcer", "the", "a", "an", "with", "and", "slow",
+    "fast", "calm", "energetic", "serious", "playful", "formal", "casual",
+    "confident", "soothing", "raspy", "clear", "rich", "light", "heavy",
+    "friendly", "authoritative", "mature", "youthful", "narrator's",
+}
+_PROPER_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b")
+_POSSESSIVE_VOICE_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}'s\s+voice\b")
+_VOICE_CONTEXT_RE = re.compile(r"\b(?:voice|sound\w*|narrat\w*|speak\w*|talk\w*|perform\w*|impression|style)\b", re.I)
+_NAME_PROXIMITY_WINDOW = 40
+
+
+def _looks_like_a_real_name(phrase: str) -> bool:
+    words = phrase.split()
+    return not all(w.lower().strip("'s") in _DESCRIPTIVE_WORDS for w in words)
+
+
+# "My character Sarah Connor" is a fictional-casting request, not a
+# real-person request -- exempt a name-shaped match when a character/role
+# word appears immediately before it. This does not reopen the bypasses
+# above: explicit impersonation phrasing ("sounds like", "in the style of",
+# "the guy from"...) is matched independently of this heuristic and stays
+# blocked even inside a sentence that also mentions a character.
+_CHARACTER_CONTEXT_RE = re.compile(r"\b(?:characters?|protagonist|role\s+of)\b", re.I)
+_CHARACTER_CONTEXT_WINDOW = 25
+
+
+def _names_near_voice_context(text: str) -> bool:
+    """True if a name-shaped, capitalized phrase sits close to voice or
+    performance vocabulary anywhere in the (original-case) text.
+    """
+    for match in _PROPER_NAME_RE.finditer(text):
+        if not _looks_like_a_real_name(match.group(0)):
+            continue
+        pre_start = max(0, match.start() - _CHARACTER_CONTEXT_WINDOW)
+        if _CHARACTER_CONTEXT_RE.search(text[pre_start:match.start()]):
+            continue
+        start = max(0, match.start() - _NAME_PROXIMITY_WINDOW)
+        end = min(len(text), match.end() + _NAME_PROXIMITY_WINDOW)
+        if _VOICE_CONTEXT_RE.search(text[start:end]):
+            return True
+    return False
+
 
 def screen_generation_prompt(prompt: str | None) -> SafetyDecision:
     text = (prompt or "").strip()
     if not text:
         return SafetyDecision(True, "synthetic-description", evidence={"prompt_present": False})
-    lowered = text.lower()
+    normalized = _normalize_for_screening(text)
     reasons: list[str] = []
-    if any(term in lowered for term in _IDENTITY_INTENT_TERMS):
+    if any(term in normalized for term in _IDENTITY_INTENT_TERMS):
         reasons.append("The request asks for identity deception or exact imitation")
-    if any(pattern.search(text) for pattern in _IMPERSONATION_PATTERNS):
+    if any(pattern.search(normalized) for pattern in _IMPERSONATION_PATTERNS):
         reasons.append("Named-person or identity-imitation requests are not allowed in synthetic creation")
+    if _POSSESSIVE_VOICE_RE.search(text):
+        reasons.append("Requests naming a specific real person's voice are not allowed in synthetic creation")
+    elif _names_near_voice_context(text):
+        reasons.append(
+            "The request appears to name a specific real person alongside voice or "
+            "performance language, which is not allowed in synthetic creation"
+        )
     if reasons:
         return SafetyDecision(
             False,
