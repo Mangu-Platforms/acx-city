@@ -11,9 +11,13 @@ audio must be reproducible from a snapshot alone.
 
 Safety posture: user-supplied regular expressions are compiled with the
 standard ``re`` module only, are length-capped, may not match empty text, and
-may not use nested quantifiers (the classic catastrophic-backtracking shape).
-A rule that fails to compile at apply time is skipped with evidence rather
-than failing a production job.
+are rejected if a structural scan finds a quantified group that itself
+contains a quantifier or alternation (the classic catastrophic-backtracking
+shape, e.g. "(a+)+" or "((a+))+", at any nesting depth). As a backstop against
+shapes that scan misses, every match against real text runs under a
+wall-clock budget and is abandoned rather than allowed to hang. A rule that
+fails to compile, times out, or is otherwise unsafe at apply time is skipped
+with evidence rather than failing a production job.
 
 This module imports only the standard library plus the sibling parameter
 schema.  Rule rows are read with ``getattr`` so SQLAlchemy is never imported.
@@ -22,6 +26,9 @@ from __future__ import annotations
 
 import math
 import re
+import signal
+import time
+from contextlib import contextmanager
 from typing import Any, Iterable, Mapping
 
 from .parameter_schema import get_path
@@ -42,11 +49,155 @@ MAX_LANGUAGE_LENGTH = 30
 _PRIORITY_BOUND = 1_000_000
 
 _LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
-# A quantifier applied directly to a quantified group ("(a+)+", "(x*){2}", ...)
-# is the canonical catastrophic-backtracking construction.  The scan is
-# intentionally conservative: rare legitimate patterns such as "a}+" are also
-# rejected, with a clear message, rather than risking a stuck render worker.
-_NESTED_QUANTIFIER_RE = re.compile(r"[+*}]\)?[+*{]")
+
+# ---------------------------------------------------------------------------
+# Catastrophic-backtracking defense
+#
+# User-supplied regular expressions are a classic ReDoS surface: a pattern
+# like "(a+)+" or "((a+))+" is cheap to *compile* but can take exponential
+# time to *match* against adversarial input, which would hang whichever
+# process runs it -- including the shared production worker rendering every
+# organization's audio. Static detection of every catastrophic shape is a
+# known-hard problem (equivalent to NFA ambiguity analysis), so this module
+# layers two defenses instead of trying to be exhaustive:
+#
+#   1. A structural scan (`_has_catastrophic_nesting`) for a quantified group
+#      whose interior itself contains a quantifier or a top-level
+#      alternation, at ANY nesting depth -- so both "(a+)+" and "((a+))+" are
+#      caught. Run at rule-save time and again at apply time.
+#   2. A wall-clock budget (`_pattern_time_budget`) around every match, plus
+#      an adversarial pre-flight probe at save time. This is the real
+#      backstop: even a pattern that slips past the structural scan cannot
+#      hang a render past the budget, because the operation is forcibly
+#      interrupted.
+# ---------------------------------------------------------------------------
+
+
+def _interior_is_risky(interior: str) -> bool:
+    """True if a group's interior contains a bare quantifier or a top-level
+    alternation -- either shape can make an *enclosing* quantifier
+    catastrophic (e.g. "(a+)+" or "(a|aa)+").
+    """
+    if "|" in interior:
+        return True
+    in_class = False
+    i = 0
+    n = len(interior)
+    while i < n:
+        ch = interior[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch in "*+":
+            return True
+        elif ch == "{" and interior.find("}", i) != -1:
+            return True
+        i += 1
+    return False
+
+
+def _has_catastrophic_nesting(pattern: str) -> bool:
+    """Detect a quantified group that itself contains a quantifier or
+    alternation, at any nesting depth and regardless of intervening grouping
+    parens -- e.g. "(a+)+", "((a+))+", "(?:a+)+", "(a|aa)+". Conservative by
+    design: some legitimate patterns will be rejected (with a clear message)
+    rather than risking a stuck render. Heuristic, not a complete ambiguity
+    analysis -- see the module-level note above.
+    """
+    stack: list[int] = []
+    in_class = False
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            continue
+        if ch == "(":
+            stack.append(i + 1)
+            i += 1
+            continue
+        if ch == ")":
+            if stack:
+                content_start = stack.pop()
+                if _interior_is_risky(pattern[content_start:i]):
+                    j = i + 1
+                    if j < n and pattern[j] in "*+":
+                        return True
+                    if j < n and pattern[j] == "{" and pattern.find("}", j) != -1:
+                        return True
+            i += 1
+            continue
+        i += 1
+    return False
+
+
+class _PatternTimeout(Exception):
+    """Raised when a regex operation exceeds its wall-clock budget."""
+
+
+_HAS_SIGALRM = hasattr(signal, "SIGALRM") and hasattr(signal, "setitimer")
+
+
+@contextmanager
+def _pattern_time_budget(seconds: float):
+    """Best-effort wall-clock budget for one regex operation.
+
+    Uses SIGALRM where available: CPython's regex engine checks for pending
+    signals while backtracking, so this reliably interrupts even pathological
+    patterns. SIGALRM only works from the main thread, so callers running
+    inside a threaded request handler transparently fall back to no
+    enforcement here -- for that path, the structural check plus the
+    elapsed-time check around the adversarial probe remain the defense; the
+    worker's job loop (the process that matters most, since it is shared
+    across every organization) runs single-threaded and always gets the hard
+    timeout.
+    """
+    if not _HAS_SIGALRM:
+        yield
+        return
+
+    def _handler(signum, frame):
+        raise _PatternTimeout()
+
+    try:
+        previous = signal.signal(signal.SIGALRM, _handler)
+    except ValueError:
+        # Not the main thread.
+        yield
+        return
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+#: Rendering budget for one rule against real (potentially long) text.
+_PATTERN_APPLY_BUDGET_S = 2.0
+#: Probe budget at save time; probes are short and fixed-length (see below).
+_PATTERN_PROBE_BUDGET_S = 1.0
+#: Fixed-length adversarial strings -- not attacker-controlled length -- so
+#: even an exponential-blowup pattern is bounded rather than run against
+#: arbitrary (potentially very long) user input during validation.
+_ADVERSARIAL_PROBES = ("a" * 24, "a" * 24 + "!")
 
 
 class PronunciationRuleError(ValueError):
@@ -82,11 +233,17 @@ def _coerce_priority(payload: Mapping[str, Any]) -> int:
 
 
 def _compile_rule_pattern(pattern: str, case_sensitive: bool) -> re.Pattern[str]:
-    """Compile a ``pattern``-type rule, raising a human message on unsafe input."""
-    if _NESTED_QUANTIFIER_RE.search(pattern):
+    """Compile a ``pattern``-type rule, raising a human message on unsafe input.
+
+    Two independent safety checks run before a pattern is accepted: the
+    structural nested-quantifier scan, and an adversarial-probe timing test
+    (see the module-level note on catastrophic-backtracking defense above).
+    Both must pass.
+    """
+    if _has_catastrophic_nesting(pattern):
         raise PronunciationRuleError(
-            "pattern uses a quantifier applied to another quantifier "
-            "(for example \"(a+)+\"), which is not allowed"
+            "pattern uses a quantifier applied to another quantifier or "
+            "alternation (for example \"(a+)+\" or \"(a|aa)+\"), which is not allowed"
         )
     flags = re.UNICODE | (0 if case_sensitive else re.IGNORECASE)
     try:
@@ -95,6 +252,21 @@ def _compile_rule_pattern(pattern: str, case_sensitive: bool) -> re.Pattern[str]
         raise PronunciationRuleError(f"pattern is not a valid regular expression: {exc}") from exc
     if compiled.search("") is not None:
         raise PronunciationRuleError("pattern must not match empty text")
+    for probe in _ADVERSARIAL_PROBES:
+        started = time.monotonic()
+        try:
+            with _pattern_time_budget(_PATTERN_PROBE_BUDGET_S):
+                compiled.search(probe)
+        except _PatternTimeout:
+            raise PronunciationRuleError(
+                "pattern is too expensive to evaluate safely (catastrophic "
+                "backtracking risk) and was rejected"
+            )
+        if time.monotonic() - started > _PATTERN_PROBE_BUDGET_S:
+            raise PronunciationRuleError(
+                "pattern is too expensive to evaluate safely (catastrophic "
+                "backtracking risk) and was rejected"
+            )
     return compiled
 
 
@@ -308,7 +480,7 @@ def apply_pronunciation_rules(
         flags = re.UNICODE | (0 if bool(rule.get("case_sensitive")) else re.IGNORECASE)
 
         if rule_type == "pattern":
-            if _NESTED_QUANTIFIER_RE.search(pattern_text):
+            if _has_catastrophic_nesting(pattern_text):
                 applied.append(_evidence(rule, 0, "nested quantifiers are not allowed"))
                 continue
             try:
@@ -320,7 +492,11 @@ def apply_pronunciation_rules(
                 applied.append(_evidence(rule, 0, "pattern matches empty text"))
                 continue
             try:
-                rewritten, count = compiled.subn(replacement, result)
+                with _pattern_time_budget(_PATTERN_APPLY_BUDGET_S):
+                    rewritten, count = compiled.subn(replacement, result)
+            except _PatternTimeout:
+                applied.append(_evidence(rule, 0, "pattern exceeded its rendering time budget and was skipped"))
+                continue
             except (re.error, IndexError) as exc:
                 applied.append(_evidence(rule, 0, f"invalid substitution: {exc}"))
                 continue
@@ -344,7 +520,7 @@ def apply_pronunciation_rules(
 # "12:30", dates "2024-05-01"), percentages, currency amounts, and
 # identifiers, while ordinary sentence punctuation after a number is fine.
 _NUMBER_TOKEN_RE = re.compile(
-    r"(?<!\w)(?<!\d[.,:/\-])(?<![$\u20ac\u00a3#%])(\d+)(?!\w)(?![.,:/\-]\d)(?!%)"
+    r"(?<!\w)(?<!\d[.,:/\-])(?<![$€£#%])(\d+)(?!\w)(?![.,:/\-]\d)(?!%)"
 )
 _ACRONYM_TOKEN_RE = re.compile(r"(?<![\w.])([A-Z]{2,8})(?!\w)")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
