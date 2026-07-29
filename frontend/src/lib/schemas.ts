@@ -10,6 +10,9 @@ export const synthesisRequestSchema = z.object({
   formats: z.array(z.enum(['mp3', 'm4b'])).min(1),
   title: z.string().optional(),
   author: z.string().optional(),
+  voice_version_id: z.string().optional(),
+  voice_overrides: z.record(z.unknown()).optional(),
+  voice_direction: z.unknown().optional(),
 })
 export type SynthesisRequestInput = z.infer<typeof synthesisRequestSchema>
 

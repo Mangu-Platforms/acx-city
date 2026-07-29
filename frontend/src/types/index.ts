@@ -1,3 +1,5 @@
+import type { VoiceDirectionPlan } from './voice-city'
+
 export interface Provider {
   name: string
   display_name: string
@@ -34,7 +36,17 @@ export interface ChapterState {
 
 export interface TaskStatus {
   task_id: string
-  status: 'started' | 'processing' | 'completed' | 'failed'
+  status:
+    | 'queued'
+    | 'running'
+    | 'succeeded'
+    | 'needs_review'
+    | 'canceled'
+    // Legacy aliases kept so older API responses still type-check.
+    | 'started'
+    | 'processing'
+    | 'completed'
+    | 'failed'
   progress: number
   provider?: string
   chapters_count: number
@@ -45,6 +57,9 @@ export interface TaskStatus {
   formats?: string[]
   qc_issues?: { chapter: string; issues: string[] }[]
   error?: string
+  voice_version_id?: string | null
+  voice_display_name?: string | null
+  voice_parameter_fingerprint?: string | null
 }
 
 export interface SynthesisRequest {
@@ -55,6 +70,9 @@ export interface SynthesisRequest {
   formats: string[]
   title?: string
   author?: string
+  voice_version_id?: string
+  voice_overrides?: Record<string, unknown>
+  voice_direction?: VoiceDirectionPlan
 }
 
 export interface UploadResponse {

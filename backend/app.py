@@ -36,6 +36,11 @@ from storage import get_storage
 
 from observability import configure_logging, init_sentry, new_request_id, request_id_var
 from webhooks import github_bp
+from voice_city import voice_city_bp
+from services.voice_city.production import (
+    VoiceProductionError, attach_voice_snapshot, load_voice_snapshot,
+    resolve_voice_version_for_request,
+)
 
 load_dotenv()
 configure_logging()
@@ -50,6 +55,7 @@ SYNTHESIZE_RATE_WINDOW = int(os.getenv("SYNTHESIZE_RATE_WINDOW_SECONDS", "60"))
 
 app = Flask(__name__)
 app.register_blueprint(github_bp)
+app.register_blueprint(voice_city_bp)
 
 # Scoped CORS (blueprint rescue item), defaults to the local dev origin.
 allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").strip()
@@ -135,6 +141,7 @@ def _chapter_json(c: ChapterResult) -> dict:
 
 
 def _job_json(job: Job) -> dict:
+    snapshot = load_voice_snapshot(g.db, job.id)
     formats = [f for f in ("mp3" if job.output_mp3_key else "", "m4b" if job.output_m4b_key else "") if f]
     qc_issues = [
         {"chapter": c.title, "issues": (c.qc_issues or "").split("\n")}
@@ -147,6 +154,9 @@ def _job_json(job: Job) -> dict:
         "status": job.status.value,
         "progress": job.progress,
         "provider": job.provider,
+        "voice_version_id": snapshot.voice_version_id if snapshot else None,
+        "voice_display_name": (snapshot.provenance or {}).get("voice_name") if snapshot else None,
+        "voice_parameter_fingerprint": snapshot.fingerprint if snapshot else None,
         "chapters_count": job.chapters_count,
         "current_chapter": job.current_chapter,
         "chapters": [_chapter_json(c) for c in job.chapters],
@@ -277,14 +287,28 @@ def synthesize():
     if not text or not text.strip():
         return jsonify({"error": "No text provided"}), 400
 
-    provider_name = data.get("provider") or registry.default().name
+    voice_version_id = data.get("voice_version_id")
+    authoritative_voice_id = None
+    if voice_version_id:
+        try:
+            provider_name, authoritative_voice_id = resolve_voice_version_for_request(
+                g.db, organization_id=identity.org.id, voice_version_id=str(voice_version_id)
+            )
+        except VoiceProductionError as exc:
+            return jsonify({"error": str(exc)}), 400
+    else:
+        provider_name = data.get("provider") or registry.default().name
+
+    if provider_name == "voice-city" and not voice_version_id:
+        return jsonify({"error": "Voice City production requires an immutable voice_version_id"}), 400
+
     provider = registry.get(provider_name)
     if not provider:
         return jsonify({"error": f"Unknown provider '{provider_name}'"}), 400
     if not provider.is_available():
         return jsonify({"error": f"Provider '{provider_name}' is not configured/available"}), 400
 
-    voice_id = data.get("voice_id")
+    voice_id = authoritative_voice_id or data.get("voice_id")
     if not voice_id:
         voices = provider.list_voices("en")
         voice_id = voices[0]["id"] if voices else None
@@ -335,6 +359,18 @@ def synthesize():
         formats=",".join(formats),
     )
     q.enqueue_job(g.db, job)
+    if voice_version_id:
+        try:
+            attach_voice_snapshot(
+                g.db, job=job, organization_id=identity.org.id,
+                voice_version_id=str(voice_version_id),
+                performance_overrides=data.get("voice_overrides") or {},
+                direction_plan=data.get("voice_direction") or {},
+                actor_user_id=identity.user.id,
+            )
+        except VoiceProductionError as exc:
+            g.db.rollback()
+            return jsonify({"error": str(exc)}), 400
     g.db.commit()
 
     return jsonify({"task_id": job.id, "job_id": job.id, "status": job.status.value})

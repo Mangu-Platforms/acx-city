@@ -10,23 +10,25 @@ interface Props {
 export const ProgressTracker: React.FC<Props> = ({ taskStatus, onDownload }) => {
   if (!taskStatus) return null
 
+  const isDone = taskStatus.status === 'succeeded' || taskStatus.status === 'completed'
+  const needsReview = taskStatus.status === 'needs_review'
+  const isFailed = taskStatus.status === 'failed' || taskStatus.status === 'canceled'
+
   const icon = () => {
-    switch (taskStatus.status) {
-      case 'completed': return <CheckCircle className="h-8 w-8 text-green-500" />
-      case 'failed': return <XCircle className="h-8 w-8 text-red-500" />
-      default: return <Loader className="h-8 w-8 text-blue-500 animate-spin" />
-    }
+    if (isDone) return <CheckCircle className="h-8 w-8 text-green-500" />
+    if (needsReview) return <AlertTriangle className="h-8 w-8 text-amber-500" />
+    if (isFailed) return <XCircle className="h-8 w-8 text-red-500" />
+    return <Loader className="h-8 w-8 text-blue-500 animate-spin" />
   }
 
   const color = () => {
-    switch (taskStatus.status) {
-      case 'completed': return 'text-green-700 bg-green-50 border-green-200'
-      case 'failed': return 'text-red-700 bg-red-50 border-red-200'
-      default: return 'text-blue-700 bg-blue-50 border-blue-200'
-    }
+    if (isDone) return 'text-green-700 bg-green-50 border-green-200'
+    if (needsReview) return 'text-amber-700 bg-amber-50 border-amber-200'
+    if (isFailed) return 'text-red-700 bg-red-50 border-red-200'
+    return 'text-blue-700 bg-blue-50 border-blue-200'
   }
 
-  const active = taskStatus.status === 'started' || taskStatus.status === 'processing'
+  const active = !isDone && !needsReview && !isFailed
   const cached = taskStatus.cached_chunks || 0
   const synthesized = taskStatus.synthesized_chunks || 0
   const qcIssues = taskStatus.qc_issues || []
@@ -38,9 +40,10 @@ export const ProgressTracker: React.FC<Props> = ({ taskStatus, onDownload }) => 
         <div>
           <h3 className="font-medium capitalize">{taskStatus.status}</h3>
           <p className="text-sm opacity-75">
-            {taskStatus.status === 'processing' && `Chapter ${taskStatus.current_chapter} of ${taskStatus.chapters_count}`}
-            {taskStatus.status === 'completed' && 'Audiobook ready for download'}
-            {taskStatus.status === 'failed' && taskStatus.error}
+            {active && taskStatus.chapters_count > 0 && `Chapter ${taskStatus.current_chapter} of ${taskStatus.chapters_count}`}
+            {isDone && 'Audiobook ready for download'}
+            {needsReview && 'Finished with quality warnings — review before publishing'}
+            {isFailed && (taskStatus.error || 'Production did not complete')}
           </p>
         </div>
       </div>
@@ -90,7 +93,7 @@ export const ProgressTracker: React.FC<Props> = ({ taskStatus, onDownload }) => 
         </div>
       )}
 
-      {taskStatus.status === 'completed' && (
+      {(isDone || needsReview) && (
         <div className="flex space-x-3">
           {(taskStatus.formats || ['mp3']).map(fmt => (
             <button key={fmt} onClick={() => onDownload(taskStatus.task_id, fmt)}

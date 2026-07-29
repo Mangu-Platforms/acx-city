@@ -1,19 +1,27 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { FileUpload } from './components/FileUpload'
 import { VoiceSelector } from './components/VoiceSelector'
 import { ProgressTracker } from './components/ProgressTracker'
 import { AudioPlayer } from './components/AudioPlayer'
+import { VoiceCityStudio } from './components/voice-city/VoiceCityStudio'
 import { audiobookAPI } from './services/api'
 import { TaskStatus, SynthesisRequest, UploadResponse } from './types'
-import { Book } from 'lucide-react'
+import type { VoiceCitySelection } from './types/voice-city'
+import { Book, Dna } from 'lucide-react'
 import { AuthGate, LogoutButton } from './components/AuthGate'
 
+type Workspace = 'production' | 'voice-city'
+const ACTIVE_STATUSES = new Set(['started', 'processing', 'queued', 'running'])
+const TERMINAL_STATUSES = new Set(['completed', 'succeeded', 'needs_review', 'failed', 'canceled'])
+
 function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: () => void }) {
+  const [workspace, setWorkspace] = useState<Workspace>('production')
   const [text, setText] = useState('')
   const [bookTitle, setBookTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [provider, setProvider] = useState('')
   const [selectedVoice, setSelectedVoice] = useState('')
+  const [voiceCitySelection, setVoiceCitySelection] = useState<VoiceCitySelection | null>(null)
   const [engine, setEngine] = useState<'neural' | 'standard'>('neural')
   const [detectedChapters, setDetectedChapters] = useState<string[]>([])
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null)
@@ -22,17 +30,17 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
 
   useEffect(() => {
     let interval: number | undefined
-    if (currentTask && (currentTask.status === 'started' || currentTask.status === 'processing')) {
+    if (currentTask && ACTIVE_STATUSES.has(currentTask.status)) {
       interval = window.setInterval(async () => {
         try {
           const status = await audiobookAPI.getTaskStatus(currentTask.task_id)
           setCurrentTask(status)
-          if (status.status === 'completed' || status.status === 'failed') {
+          if (TERMINAL_STATUSES.has(status.status)) {
             setIsProcessing(false)
             window.clearInterval(interval)
           }
-        } catch (e) {
-          console.error('Error polling task status:', e)
+        } catch (error) {
+          console.error('Error polling task status:', error)
         }
       }, 2000)
     }
@@ -45,107 +53,111 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
       setText(result.text)
       setDetectedChapters(result.detected_chapters || [])
       if (!bookTitle) setBookTitle(file.name.replace(/\.[^.]+$/, ''))
-    } catch (e) {
-      console.error('Upload failed:', e)
-      alert('Failed to upload file.')
+    } catch (error) {
+      console.error('Upload failed:', error)
+      window.alert('Failed to upload file.')
     }
+  }
+
+  const handleVoiceCitySelection = (selection: VoiceCitySelection) => {
+    setVoiceCitySelection(selection)
+    setProvider(selection.provider)
+    setSelectedVoice(selection.providerVoiceId)
+    setEngine('neural')
+    setWorkspace('production')
   }
 
   const handleSynthesize = async () => {
     if (!text.trim()) {
-      alert('Please provide text or upload a file')
+      window.alert('Please provide text or upload a file')
       return
     }
     try {
       setIsProcessing(true)
       const request: SynthesisRequest = {
-        text, provider, voice_id: selectedVoice, engine,
-        formats: ['mp3', 'm4b'], title: bookTitle, author
+        text,
+        provider,
+        voice_id: selectedVoice,
+        engine,
+        formats: ['mp3', 'm4b'],
+        title: bookTitle,
+        author,
+        voice_version_id: voiceCitySelection?.voiceVersionId,
+        voice_direction: voiceCitySelection?.directionPlan,
       }
       const response = await audiobookAPI.synthesize(request)
-      setCurrentTask({ task_id: response.task_id, status: 'started', progress: 0, chapters_count: 0, current_chapter: 0 })
-    } catch (e: any) {
-      console.error('Start synthesis failed:', e)
-      alert(e?.response?.data?.error || 'Failed to start audiobook production')
+      setCurrentTask({ task_id: response.task_id, status: response.status as TaskStatus['status'], progress: 0, chapters_count: 0, current_chapter: 0, voice_version_id: voiceCitySelection?.voiceVersionId, voice_display_name: voiceCitySelection?.displayName })
+    } catch (error: any) {
+      console.error('Start synthesis failed:', error)
+      window.alert(error?.response?.data?.error || 'Failed to start audiobook production')
       setIsProcessing(false)
     }
   }
 
   const handleDownload = async (taskId: string, format: string) => {
     try {
-      // The API returns a time-limited signed URL to object storage; follow it.
       const url = await audiobookAPI.getDownloadUrl(taskId, format)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${bookTitle || 'audiobook'}_${taskId.slice(0, 8)}.${format}`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${bookTitle || 'audiobook'}_${taskId.slice(0, 8)}.${format}`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
       if (format === 'mp3') setAudioUrl(url)
-    } catch (e) {
-      console.error('Download failed:', e)
-      alert('Failed to download audiobook')
+    } catch (error) {
+      console.error('Download failed:', error)
+      window.alert('Failed to download audiobook')
     }
+  }
+
+  if (workspace === 'voice-city') {
+    return <VoiceCityStudio manuscriptText={text} onUseVoice={handleVoiceCitySelection} onReturnToProduction={() => setWorkspace('production')} />
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
+      <header className="border-b bg-white shadow-sm">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between gap-4">
             <div className="flex items-center space-x-3">
               <Book className="h-8 w-8 text-blue-600" />
-              <h1 className="text-2xl font-bold text-gray-900">Audiobook Producer</h1>
+              <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">Audiobook Producer</h1>
             </div>
-            <LogoutButton onLogout={onLogout} email={userEmail} />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setWorkspace('voice-city')} className="flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"><Dna className="h-4 w-4 text-cyan-300" /> Voice City</button>
+              <LogoutButton onLogout={onLogout} email={userEmail} />
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-8">
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload Your Book</h2>
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {voiceCitySelection && <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3"><div className="flex items-center gap-3"><Dna className="h-5 w-5 text-cyan-700" /><div><strong className="text-sm text-cyan-950">{voiceCitySelection.displayName} V{voiceCitySelection.versionNumber}</strong><p className="text-xs text-cyan-800">Immutable Voice City version selected{voiceCitySelection.directionPlan?.cast.length ? ` with ${voiceCitySelection.directionPlan.cast.length} character cast assignment${voiceCitySelection.directionPlan.cast.length === 1 ? '' : 's'}` : ''}.</p></div></div><button type="button" onClick={() => setWorkspace('voice-city')} className="rounded-lg border border-cyan-300 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800">Open studio</button></div>}
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+          <div className="space-y-8 lg:col-span-2">
+            <div className="rounded-lg border bg-white p-6 shadow-sm">
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">Upload Your Book</h2>
               <FileUpload onFileUpload={handleFileUpload} disabled={isProcessing} />
-              {detectedChapters.length > 0 && (
-                <div className="mt-4 text-sm text-gray-600">
-                  <span className="font-medium">{detectedChapters.length} chapters detected:</span>{' '}
-                  {detectedChapters.slice(0, 6).join(' · ')}{detectedChapters.length > 6 ? ' · …' : ''}
-                </div>
-              )}
+              {detectedChapters.length > 0 && <div className="mt-4 text-sm text-gray-600"><span className="font-medium">{detectedChapters.length} chapters detected:</span>{' '}{detectedChapters.slice(0, 6).join(' · ')}{detectedChapters.length > 6 ? ' · …' : ''}</div>}
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Or Paste Text</h2>
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Paste your book text here, or upload a file above. Lines like 'Chapter 1' become chapter breaks."
-                className="w-full h-64 p-4 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                disabled={isProcessing}
-              />
-              {text && (
-                <div className="mt-3 text-sm text-gray-500">
-                  {text.length.toLocaleString()} characters • {text.split(/\s+/).length.toLocaleString()} words
-                </div>
-              )}
+            <div className="rounded-lg border bg-white p-6 shadow-sm">
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">Or Paste Text</h2>
+              <textarea value={text} onChange={event => setText(event.target.value)} placeholder="Paste your book text here, or upload a file above. Lines like 'Chapter 1' become chapter breaks." className="h-64 w-full resize-none rounded-lg border border-gray-300 p-4 focus:border-transparent focus:ring-2 focus:ring-blue-500" disabled={isProcessing} />
+              {text && <div className="mt-3 text-sm text-gray-500">{text.length.toLocaleString()} characters • {text.split(/\s+/).length.toLocaleString()} words</div>}
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Book Details</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <input value={bookTitle} onChange={e => setBookTitle(e.target.value)}
-                  placeholder="Book title (used in M4B metadata)" disabled={isProcessing}
-                  className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-                <input value={author} onChange={e => setAuthor(e.target.value)}
-                  placeholder="Author (optional)" disabled={isProcessing}
-                  className="p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+            <div className="rounded-lg border bg-white p-6 shadow-sm">
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">Book Details</h2>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <input value={bookTitle} onChange={event => setBookTitle(event.target.value)} placeholder="Book title (used in M4B metadata)" disabled={isProcessing} className="rounded-lg border border-gray-300 p-3 focus:border-transparent focus:ring-2 focus:ring-blue-500" />
+                <input value={author} onChange={event => setAuthor(event.target.value)} placeholder="Author (optional)" disabled={isProcessing} className="rounded-lg border border-gray-300 p-3 focus:border-transparent focus:ring-2 focus:ring-blue-500" />
               </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Voice Settings</h2>
+            <div className="rounded-lg border bg-white p-6 shadow-sm">
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">Voice Settings</h2>
               <VoiceSelector
                 provider={provider}
                 onProviderChange={setProvider}
@@ -153,42 +165,19 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
                 onVoiceChange={setSelectedVoice}
                 engine={engine}
                 onEngineChange={setEngine}
+                voiceCitySelection={voiceCitySelection}
+                onClearVoiceCity={() => setVoiceCitySelection(null)}
+                onOpenVoiceCity={() => setWorkspace('voice-city')}
               />
             </div>
 
-            <button
-              onClick={handleSynthesize}
-              disabled={!text.trim() || !selectedVoice || isProcessing}
-              className="w-full py-4 px-6 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-            >
-              {isProcessing ? 'Generating Audiobook...' : 'Generate Audiobook'}
-            </button>
+            <button onClick={handleSynthesize} disabled={!text.trim() || !selectedVoice || isProcessing} className="w-full rounded-lg bg-blue-600 px-6 py-4 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400">{isProcessing ? 'Generating Audiobook…' : voiceCitySelection ? `Generate with ${voiceCitySelection.displayName} V${voiceCitySelection.versionNumber}` : 'Generate Audiobook'}</button>
           </div>
 
           <div className="space-y-8">
-            {currentTask && (
-              <div className="bg-white rounded-lg shadow-sm border p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Production Status</h2>
-                <ProgressTracker taskStatus={currentTask} onDownload={handleDownload} />
-              </div>
-            )}
-
-            {audioUrl && (
-              <div className="bg-white rounded-lg shadow-sm border p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Audio Preview</h2>
-                <AudioPlayer audioUrl={audioUrl} />
-              </div>
-            )}
-
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-              <h3 className="font-semibold text-blue-900 mb-3">How It Works</h3>
-              <ol className="text-sm text-blue-800 space-y-2 list-decimal list-inside">
-                <li>Upload a DOCX/TXT/PDF or paste text — chapters are detected automatically</li>
-                <li>Pick a voice (Edge voices are free, Polly uses your AWS account)</li>
-                <li>Generate — unchanged text is reused from cache on re-runs</li>
-                <li>Download MP3, or M4B with real chapter markers for audiobook apps</li>
-              </ol>
-            </div>
+            {currentTask && <div className="rounded-lg border bg-white p-6 shadow-sm"><h2 className="mb-4 text-lg font-semibold text-gray-900">Production Status</h2>{currentTask.voice_display_name && <p className="mb-3 rounded-lg bg-cyan-50 px-3 py-2 text-xs text-cyan-800">Voice: {currentTask.voice_display_name}</p>}<ProgressTracker taskStatus={currentTask} onDownload={handleDownload} /></div>}
+            {audioUrl && <div className="rounded-lg border bg-white p-6 shadow-sm"><h2 className="mb-4 text-lg font-semibold text-gray-900">Audio Preview</h2><AudioPlayer audioUrl={audioUrl} /></div>}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-6"><h3 className="mb-3 font-semibold text-blue-900">How It Works</h3><ol className="list-inside list-decimal space-y-2 text-sm text-blue-800"><li>Upload a DOCX/TXT/PDF or paste text</li><li>Choose a catalog voice or a versioned Voice City identity</li><li>Generate with durable jobs and content-addressed caching</li><li>Download MP3 or chaptered M4B after quality control</li></ol></div>
           </div>
         </div>
       </main>
@@ -197,9 +186,5 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
 }
 
 export default function App() {
-  return (
-    <AuthGate>
-      {(auth, logout) => <AudiobookApp userEmail={auth.user?.email} onLogout={logout} />}
-    </AuthGate>
-  )
+  return <AuthGate>{(auth, logout) => <AudiobookApp userEmail={auth.user?.email} onLogout={logout} />}</AuthGate>
 }

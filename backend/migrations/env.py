@@ -9,6 +9,7 @@ from sqlalchemy import engine_from_config, pool
 from db.base import Base
 from db.session import database_url
 import db.models  # noqa: F401  (import registers all models on Base.metadata)
+import db.voice_models  # noqa: F401  (Voice City models)
 
 config = context.config
 if config.config_file_name is not None:

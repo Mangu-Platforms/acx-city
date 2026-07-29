@@ -20,6 +20,8 @@ class SpeechProvider(ABC):
     #: approximate USD cost per 1,000,000 characters synthesized (for the cost
     #: ledger / quota estimates). 0 for free providers. Override per provider.
     cost_per_million_chars: float = 0.0
+    #: False for organization-owned artifacts that must not appear in the global catalog.
+    catalog_discoverable: bool = True
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -36,6 +38,17 @@ class SpeechProvider(ABC):
         Raises on failure; the pipeline handles retries.
         """
 
+    def synthesize_with_options(
+        self, text: str, voice_id: str, engine: str = "neural", *,
+        rate: Optional[str] = None, pitch: Optional[str] = None,
+        volume: Optional[str] = None, style: Optional[str] = None,
+    ) -> bytes:
+        """Render semantic prosody options when supported.
+
+        Catalog providers remain compatible by falling back to ``synthesize``.
+        """
+        return self.synthesize(text, voice_id, engine)
+
     def describe(self) -> Dict:
         return {
             "name": self.name,
@@ -44,4 +57,5 @@ class SpeechProvider(ABC):
             "paid": self.paid,
             "max_chars": self.max_chars,
             "cost_per_million_chars": self.cost_per_million_chars,
+            "catalog_discoverable": self.catalog_discoverable,
         }

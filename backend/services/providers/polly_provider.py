@@ -1,4 +1,5 @@
 """AWS Polly adapter. Only active when AWS credentials are configured."""
+import html
 import os
 from typing import Dict, List, Optional
 
@@ -56,11 +57,20 @@ class PollyProvider(SpeechProvider):
         ]
 
     def synthesize(self, text: str, voice_id: str, engine: str = "neural") -> bytes:
+        return self.synthesize_with_options(text, voice_id, engine=engine)
+
+    def synthesize_with_options(
+        self, text: str, voice_id: str, engine: str = "neural", *,
+        rate: Optional[str] = None, pitch: Optional[str] = None,
+        volume: Optional[str] = None, style: Optional[str] = None,
+    ) -> bytes:
+        escaped = html.escape(text, quote=False)
+        prosody = []
+        if rate: prosody.append(f'rate="{rate}"')
+        if pitch: prosody.append(f'pitch="{pitch}"')
+        if volume: prosody.append(f'volume="{volume}"')
+        rendered = f"<speak><prosody {' '.join(prosody)}>{escaped}</prosody></speak>" if prosody else f"<speak>{escaped}</speak>"
         response = self._get_client().synthesize_speech(
-            Text=text,
-            VoiceId=voice_id,
-            Engine=engine,
-            OutputFormat="mp3",
-            TextType="text",
+            Text=rendered, VoiceId=voice_id, Engine=engine, OutputFormat="mp3", TextType="ssml",
         )
         return response["AudioStream"].read()

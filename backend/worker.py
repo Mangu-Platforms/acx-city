@@ -25,6 +25,7 @@ from db import init_engine, session_scope
 from jobs import queue as q
 from jobs.pipeline import JobCanceled, run_job
 from observability import configure_logging, init_sentry, request_id_var
+from services.voice_city import voice_optimizer as voice_optimizer
 
 configure_logging()
 init_sentry()
@@ -92,6 +93,36 @@ def process_one(worker_id: str) -> bool:
     return True
 
 
+def process_voice_city_one(worker_id: str) -> bool:
+    # Claim and run one persistent-identity optimization job.
+    with session_scope() as session:
+        job = voice_optimizer.claim_next_job(session, worker_id)
+        if job is None:
+            return False
+        job_id = job.id
+
+    request_id_var.set(job_id)
+    with session_scope() as session:
+        from db.voice_models import VoiceCityGenerationJob
+
+        job = session.get(VoiceCityGenerationJob, job_id)
+        if job is None:
+            log.error("Voice City optimization job %s disappeared after claim", job_id)
+            return True
+        try:
+            voice_optimizer.run_optimization_job(session, job, worker_id=worker_id)
+        except voice_optimizer.OptimizationCanceled:
+            voice_optimizer.mark_canceled(session, job, worker_id)
+            log.info("Voice City optimization job %s canceled", job_id)
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            with session_scope() as retry_session:
+                retry_job = retry_session.get(VoiceCityGenerationJob, job_id)
+                voice_optimizer.fail_job(retry_session, retry_job, worker_id, str(exc))
+            log.exception("Voice City optimization job %s failed", job_id)
+    return True
+
+
 def main() -> None:
     init_engine()
     worker_id = _worker_id()
@@ -102,6 +133,7 @@ def main() -> None:
     # Startup orphan recovery (restart safety).
     with session_scope() as session:
         q.recover_orphans(session)
+        voice_optimizer.recover_orphans(session)
 
     last_sweep = time.monotonic()
     last_retention = time.monotonic()
@@ -109,6 +141,8 @@ def main() -> None:
         did_work = False
         try:
             did_work = process_one(worker_id)
+            if not did_work:
+                did_work = process_voice_city_one(worker_id)
         except Exception:  # noqa: BLE001
             log.exception("unexpected error in worker loop")
 
@@ -116,6 +150,7 @@ def main() -> None:
         if now - last_sweep >= ORPHAN_SWEEP_INTERVAL:
             with session_scope() as session:
                 q.recover_orphans(session)
+                voice_optimizer.recover_orphans(session)
             last_sweep = now
 
         if now - last_retention >= RETENTION_SWEEP_INTERVAL:
