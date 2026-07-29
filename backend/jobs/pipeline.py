@@ -9,6 +9,8 @@ live inside app.py's AudiobookProducer, but it now:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from time import sleep
@@ -22,6 +24,9 @@ from db.models import ChapterResult, ChapterStatus, Job
 from services.providers import ProviderRegistry
 from services.synthesis_cache import SynthesisCache
 from services.text_processor import TextProcessor
+from services.voice_city.production import (
+    load_voice_snapshot, prepare_directed_segments, production_manifest,
+)
 from storage import get_storage
 from utils.audio_utils import AudioUtils
 
@@ -57,7 +62,7 @@ class JobCanceled(Exception):
     """Raised when a cooperative cancel is observed mid-run."""
 
 
-def _synthesize_with_retry(provider, chunk: str, voice_id: str, engine: str) -> bytes:
+def _synthesize_with_retry(provider, chunk: str, voice_id: str, engine: str, render_plan=None) -> bytes:
     """Synthesize one chunk with exponential-backoff retry.
 
     Retries on any exception up to _CHUNK_MAX_ATTEMPTS times before re-raising.
@@ -66,6 +71,11 @@ def _synthesize_with_retry(provider, chunk: str, voice_id: str, engine: str) -> 
     last_exc: Exception | None = None
     for attempt in range(_CHUNK_MAX_ATTEMPTS):
         try:
+            if render_plan is not None and hasattr(provider, "synthesize_with_options"):
+                return provider.synthesize_with_options(
+                    chunk, voice_id, engine=engine, rate=render_plan.rate,
+                    pitch=render_plan.pitch, volume=render_plan.volume, style=render_plan.style,
+                )
             return provider.synthesize(chunk, voice_id, engine)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
@@ -92,6 +102,7 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
     ``block`` and one or more chapters failed QC (caller holds it for review).
     """
     project = job.project
+    voice_snapshot = load_voice_snapshot(session, job.id)
     provider = _registry.get(job.provider) or _registry.default()
     if not provider.is_available():
         raise RuntimeError(
@@ -110,6 +121,7 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
 
     chapter_files = []
     chapter_titles = []
+    direction_trace = []
     progress_per_chapter = 75 / max(len(chapters), 1)
 
     ch_rows = {c.index: c for c in job.chapters}
@@ -137,29 +149,81 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
             session.commit()
             continue
 
-        chunks = _text.chunk_for_provider(clean, provider.max_chars)
-        row.total_chunks = len(chunks)
+        render_tasks = []
+        if voice_snapshot is not None:
+            directed_segments = prepare_directed_segments(
+                voice_snapshot, clean, engine=job.engine, chapter_index=i,
+                chapter_title=chapter["title"],
+            )
+            for directed in directed_segments:
+                task_provider = _registry.get(directed.provider)
+                if task_provider is None:
+                    raise RuntimeError(f"Unknown directed-segment provider: {directed.provider}")
+                if not task_provider.is_available():
+                    raise RuntimeError(
+                        f"Directed-segment provider '{directed.provider}' is unavailable"
+                    )
+                direction_trace.append({
+                    "chapter_index": i,
+                    "chapter_title": chapter["title"],
+                    "kind": directed.kind,
+                    "speaker": directed.speaker,
+                    "scene_index": directed.scene_index,
+                    "sentence_index": directed.sentence_index,
+                    "provider": directed.provider,
+                    "provider_voice_id": directed.provider_voice_id,
+                    "model_revision": directed.model_revision,
+                    "voice_version_id": directed.metadata.get("voice_version_id"),
+                    "voice_name": directed.metadata.get("voice_name"),
+                    "identity_fingerprint": directed.identity_fingerprint,
+                    "text_sha256": hashlib.sha256(directed.text.encode("utf-8")).hexdigest(),
+                    "character_count": len(directed.text),
+                    "source_segment_index": directed.metadata.get("source_segment_index"),
+                    "source_segment_indices": directed.metadata.get("source_segment_indices"),
+                })
+                for segment_chunk in _text.chunk_for_provider(
+                    directed.text, task_provider.max_chars
+                ):
+                    render_tasks.append((
+                        task_provider, segment_chunk, directed.provider_voice_id,
+                        directed.render_plan, directed.identity_fingerprint,
+                    ))
+        else:
+            for plain_chunk in _text.chunk_for_provider(clean, provider.max_chars):
+                render_tasks.append((provider, plain_chunk, job.voice_id, None, ""))
+
+        row.total_chunks = len(render_tasks)
+        if not render_tasks:
+            row.status = ChapterStatus.skipped
+            session.commit()
+            continue
 
         chunk_files = []
-        for chunk in chunks:
-            key = _cache.key(provider.name, job.voice_id, job.engine, chunk)
+        for task_provider, rendered_chunk, task_voice_id, render_plan, identity_fingerprint in render_tasks:
+            cache_voice_id = task_voice_id
+            if voice_snapshot is not None and render_plan is not None:
+                cache_voice_id = (
+                    f"{task_voice_id}:{voice_snapshot.fingerprint}:"
+                    f"{identity_fingerprint}:{render_plan.cache_discriminator()}"
+                )
+            key = _cache.key(task_provider.name, cache_voice_id, job.engine, rendered_chunk)
             cached = _cache.get(key)
             if cached:
                 chunk_files.append(cached)
                 row.cached_chunks += 1
                 job.cached_chunks += 1
             else:
-                # Fix #1: retry on transient network/provider errors so a single
-                # hiccup doesn't fail the whole job.
-                audio = _synthesize_with_retry(provider, chunk, job.voice_id, job.engine)
+                audio = _synthesize_with_retry(
+                    task_provider, rendered_chunk, task_voice_id, job.engine,
+                    render_plan=render_plan,
+                )
                 chunk_files.append(_cache.put(key, audio))
                 job.synthesized_chunks += 1
-                # Cost ledger: only newly synthesized (not cached) chunks are
-                # billable, and only for paid providers.
-                if provider.paid:
+                if task_provider.paid:
                     record_usage(
-                        session, job.organization_id, provider.name, len(chunk),
-                        provider.cost_per_million_chars, job_id=job.id,
+                        session, job.organization_id, task_provider.name,
+                        len(rendered_chunk), task_provider.cost_per_million_chars,
+                        job_id=job.id,
                     )
 
         chapter_path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
@@ -225,6 +289,21 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
 
     if not (job.output_mp3_key or job.output_m4b_key):
         raise RuntimeError("No output file could be produced")
+
+    if voice_snapshot is not None:
+        manifest = production_manifest(voice_snapshot, job_id=job.id)
+        manifest["direction_trace"] = direction_trace
+        output_fingerprints = {}
+        for output_format, output_path in (("mp3", job.output_mp3), ("m4b", job.output_m4b)):
+            if output_path and os.path.exists(output_path):
+                with open(output_path, "rb") as handle:
+                    output_fingerprints[output_format] = hashlib.sha256(handle.read()).hexdigest()
+        manifest["output_audio_fingerprints"] = output_fingerprints
+        storage.put_bytes(
+            _output_key(job, "voice-city-provenance.json"),
+            json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8"),
+            content_type="application/json",
+        )
 
     job.progress = 100
     session.commit()
