@@ -22,3 +22,7 @@ __all__ = [
     "init_engine",
     "is_postgres",
 ]
+
+
+# VOICE CITY INTEGRATION: register bounded Voice City ORM models on Base.metadata.
+from . import voice_models as _voice_models  # noqa: F401,E402
