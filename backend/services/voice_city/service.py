@@ -1401,14 +1401,25 @@ class VoiceCityService:
     # ------------------------------------------------------------------
     def create_reference_authorization(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         enabled = os.getenv("VOICE_CITY_REFERENCE_VOICES_ENABLED", "false").lower() == "true"
+        if not enabled:
+            raise VoiceCityError("Reference-voice creation is disabled until the synthetic system is mature")
         decision = screen_reference_workflow(
             feature_enabled=enabled,
             authorization_status=str(payload.get("status") or "pending"),
             consent_document_key=str(payload.get("consent_document_key") or "") or None,
             identity_verified=bool(payload.get("identity_verified", False)),
         )
-        if not enabled:
-            raise VoiceCityError("Reference-voice creation is disabled until the synthetic system is mature")
+        # `identity_verified` and `status` are currently self-attested by the
+        # requester -- no document-verification service is integrated yet
+        # (reference cloning ships disabled by design; see the product notes).
+        # Enforcing `decision.allowed` here is what prevents an authorization
+        # record from ever being created in an "approved" state without a
+        # consent document and an identity-verified flag both present, and it
+        # must hold the moment this feature flag is ever turned on in
+        # production -- previously this decision was computed and attached to
+        # the audit payload but never actually checked.
+        if not decision.allowed:
+            raise VoiceCityError("; ".join(decision.reasons))
         row = VoiceCityReferenceAuthorization(
             organization_id=self.organization_id,
             created_by=self.user_id,
