@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { Provider, Voice } from '../types'
 import { audiobookAPI } from '../services/api'
-import { Volume2, Loader, Sparkles, Cloud } from 'lucide-react'
+import { Volume2, Loader, Sparkles, Cloud, Dna, X } from 'lucide-react'
+import type { VoiceCitySelection } from '../types/voice-city'
 
 interface VoiceSelectorProps {
   provider: string
@@ -10,10 +11,14 @@ interface VoiceSelectorProps {
   onVoiceChange: (voiceId: string) => void
   engine: 'neural' | 'standard'
   onEngineChange: (engine: 'neural' | 'standard') => void
+  voiceCitySelection: VoiceCitySelection | null
+  onClearVoiceCity: () => void
+  onOpenVoiceCity: () => void
 }
 
 export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
-  provider, onProviderChange, selectedVoice, onVoiceChange, engine, onEngineChange
+  provider, onProviderChange, selectedVoice, onVoiceChange, engine, onEngineChange,
+  voiceCitySelection, onClearVoiceCity, onOpenVoiceCity
 }) => {
   const [providers, setProviders] = useState<Provider[]>([])
   const [voices, setVoices] = useState<Voice[]>([])
@@ -53,6 +58,27 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
 
   return (
     <div className="space-y-6">
+      {voiceCitySelection ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-300 bg-cyan-50 p-4">
+          <div className="flex items-center gap-3">
+            <Dna className="h-5 w-5 text-cyan-700" />
+            <div>
+              <div className="font-medium text-cyan-950">{voiceCitySelection.displayName} <span className="text-xs font-semibold">V{voiceCitySelection.versionNumber}</span></div>
+              <div className="text-xs text-cyan-800">Immutable Voice City identity · {voiceCitySelection.provider}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onOpenVoiceCity} className="rounded-lg border border-cyan-300 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-100">Open studio</button>
+            <button type="button" onClick={onClearVoiceCity} aria-label="Clear Voice City selection" className="rounded-lg border border-cyan-300 bg-white p-1.5 text-cyan-800 hover:bg-cyan-100"><X className="h-4 w-4" /></button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={onOpenVoiceCity}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-cyan-300 bg-cyan-50/50 px-4 py-3 text-sm font-medium text-cyan-800 transition-colors hover:bg-cyan-50">
+          <Dna className="h-4 w-4" />
+          <span>Design a custom narrator in Voice City</span>
+        </button>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-3">Speech Engine</label>
         <div className="flex space-x-4">
