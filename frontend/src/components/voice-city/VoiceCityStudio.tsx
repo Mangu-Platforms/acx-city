@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Beaker, BookOpen, Check, ChevronLeft, ChevronRight, Dna, FlaskConical, GitMerge,
-  History, Library, LockKeyhole, Save, ShieldCheck, SlidersHorizontal, Sparkles,
+  Beaker, BookOpen, Check, ChevronLeft, Dna, FlaskConical, GitMerge,
+  Library, LockKeyhole, Save, ShieldCheck, SlidersHorizontal, Sparkles,
   Undo2, Redo2, Volume2, WandSparkles,
 } from 'lucide-react'
 import { voiceCityAPI } from '../../services/voiceCityApi'
 import type {
   AuditionScript, AutomationTrack, PronunciationRule, QualityMetrics,
-  VoiceCityCandidate, VoiceCityCapabilities, VoiceCityControl, VoiceCityGenerationJob, VoiceCityMode,
+  VoiceCityCandidate, VoiceCityCapabilities, VoiceCityGenerationJob, VoiceCityMode,
   VoiceCityPreset, VoiceCitySchema, VoiceCitySelection, VoiceCityVoice,
   VoiceDirectionAnalysis, VoiceDirectionPlan,
   VoiceCityVersion, VoiceParameters, VoicePreview,
@@ -308,7 +308,7 @@ export function VoiceCityStudio({ onUseVoice, onReturnToProduction, manuscriptTe
       })
       setPreview(result)
     } catch (value) { fail(value) } finally { setPreviewBusy(false) }
-  }, [selectedCandidate, selectedVersion?.id, parameters])
+  }, [selectedCandidate, selectedVersion, parameters])
 
   const compareCandidates = async (items: VoiceCityCandidate[], blind: boolean) => {
     setPreviewBusy(true); setError(null)
@@ -369,7 +369,7 @@ export function VoiceCityStudio({ onUseVoice, onReturnToProduction, manuscriptTe
   }
   const deleteVoice = async (voice: VoiceCityVoice) => {
     if (!window.confirm(`Delete ${voice.name}? Existing audit history remains, but the voice is no longer available.`)) return
-    try { await voiceCityAPI.deleteVoice(voice.id); if (selectedVoice?.id === voice.id) { setSelectedVoice(null); setSelectedVersion(null); setParameters(deepClone(schema?.defaults || {})) }; await loadVoices(); notify(`${voice.name} deleted.`) } catch (value) { fail(value) }
+    try { await voiceCityAPI.deleteVoice(voice.id); if (selectedVoice?.id === voice.id) { setSelectedVoice(null); setSelectedVersion(null); setParameters(deepClone(schema?.defaults || {})) } await loadVoices(); notify(`${voice.name} deleted.`) } catch (value) { fail(value) }
   }
 
   const analyzeDirection = async (sourceText: string) => {
@@ -381,7 +381,7 @@ export function VoiceCityStudio({ onUseVoice, onReturnToProduction, manuscriptTe
     } catch (value) { fail(value) } finally { setDirectionBusy(false) }
   }
 
-  const useVoiceForProduction = async (selection: VoiceCitySelection) => {
+  const applyVoiceSelection = async (selection: VoiceCitySelection) => {
     setBusy(true); setError(null)
     try {
       const validated = await voiceCityAPI.validateDirection(directionPlan, selectedVersion?.seed)
@@ -483,7 +483,7 @@ export function VoiceCityStudio({ onUseVoice, onReturnToProduction, manuscriptTe
 
             <aside className="min-h-[520px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="mb-4 grid grid-cols-2 rounded-lg bg-slate-100 p-1"><button type="button" onClick={() => setRightTab('candidates')} className={`flex items-center justify-center gap-1 rounded-md px-2 py-2 text-xs font-semibold ${rightTab === 'candidates' ? 'bg-white shadow' : 'text-slate-500'}`}><Sparkles className="h-3.5 w-3.5" /> Candidates ({candidates.length})</button><button type="button" onClick={() => setRightTab('library')} className={`flex items-center justify-center gap-1 rounded-md px-2 py-2 text-xs font-semibold ${rightTab === 'library' ? 'bg-white shadow' : 'text-slate-500'}`}><Library className="h-3.5 w-3.5" /> Library ({voices.length})</button></div>
-              <div className="max-h-[calc(100vh-330px)] overflow-y-auto pr-1">{rightTab === 'candidates' ? <CandidateTray candidates={candidates} selectedCandidateId={selectedCandidate?.id || null} onSelect={selectCandidate} onPreview={candidate => { selectCandidate(candidate); renderPreview({ scriptId: scripts[0]?.id, loudnessMatch: true }, candidate) }} onAccept={acceptCandidate} onReject={rejectCandidate} onCompare={compareCandidates} /> : <VoiceLibrary voices={voices} selectedVoiceId={selectedVoice?.id || null} busy={busy} optimizationEnabled={Boolean(capabilities?.persistent_identity_optimization)} optimizationJob={optimizationJob} onSelect={selectVoice} onCreate={createVoice} onRollback={rollback} onOptimize={optimizeIdentity} onCancelOptimization={cancelOptimization} onUse={selection => { void useVoiceForProduction(selection) }} onExport={exportRecipe} onRevoke={revokeVoice} onDelete={deleteVoice} />}</div>
+              <div className="max-h-[calc(100vh-330px)] overflow-y-auto pr-1">{rightTab === 'candidates' ? <CandidateTray candidates={candidates} selectedCandidateId={selectedCandidate?.id || null} onSelect={selectCandidate} onPreview={candidate => { selectCandidate(candidate); renderPreview({ scriptId: scripts[0]?.id, loudnessMatch: true }, candidate) }} onAccept={acceptCandidate} onReject={rejectCandidate} onCompare={compareCandidates} /> : <VoiceLibrary voices={voices} selectedVoiceId={selectedVoice?.id || null} busy={busy} optimizationEnabled={Boolean(capabilities?.persistent_identity_optimization)} optimizationJob={optimizationJob} onSelect={selectVoice} onCreate={createVoice} onRollback={rollback} onOptimize={optimizeIdentity} onCancelOptimization={cancelOptimization} onUse={selection => { void applyVoiceSelection(selection) }} onExport={exportRecipe} onRevoke={revokeVoice} onDelete={deleteVoice} />}</div>
             </aside>
           </div>
         )}
