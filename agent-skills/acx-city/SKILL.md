@@ -31,10 +31,10 @@ Browser (React SPA)          Vercel (Next.js)
 | Service | Host | Purpose |
 |---|---|---|
 | React SPA (`frontend/`) | Railway | User-facing audiobook production UI |
-| Flask API (`backend/app.py`) | Railway | REST API, auth, job enqueue, signed downloads |
-| Worker (`backend/worker.py`) | Railway | Durable job consumer — TTS synthesis, QC, assembly |
+| Flask API (`backend/app.py`) | Railway (combined service) | REST API, auth, job enqueue, signed downloads |
+| Worker (`backend/worker.py`) | Railway (same combined service) | Durable job consumer — TTS synthesis, QC, assembly |
 | PostgreSQL | Railway managed | System of record — all jobs, users, orgs, usage |
-| Shared Volume `/data` | Railway Volume | Audio outputs, uploads, cache (shared by API + worker) |
+| Volume `/data` | Railway Volume (combined service) | Audio outputs, uploads, cache — shared by API + worker because they run in one service |
 | Ops Dashboard (`dashboard/`) | Vercel | Internal admin — job queue, QC, health, usage |
 | GitHub App | github.com | CI status, deployment badges, PR labels, webhook events |
 
@@ -45,6 +45,7 @@ Browser (React SPA)          Vercel (Next.js)
 ### Authentication — `AUTH_MODE` env var
 - **`legacy`** (default) — built-in bcrypt + JWT. Endpoints: `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me`.
 - **`supabase`** — verify Supabase-issued JWTs (HS256 via `SUPABASE_JWT_SECRET` or RS256/ES256 via `SUPABASE_JWKS_URL`). Users provisioned just-in-time. Toggle: set `AUTH_MODE=supabase` in backend env.
+- Production cutover plan (auth + storage): `docs/adr/0002-supabase-cutover.md`.
 
 ### Object storage — `STORAGE_BACKEND` env var
 - **`local`** (default) — filesystem at `STORAGE_LOCAL_ROOT`, HMAC-signed download URLs via `/api/files/<key>`.
@@ -90,13 +91,17 @@ Browser (React SPA)          Vercel (Next.js)
 
 ## Deployment
 
-### Railway (`railway.toml`)
-- 3 services: `backend`, `worker`, `frontend`
-- `backend` runs `alembic upgrade head` on start via `entrypoint.sh` (ROLE=api)
-- `worker` runs `python worker.py` (ROLE=worker)
-- Both share a Railway Volume mounted at `/data`
-- Postgres auto-injects `DATABASE_URL`
-- See `RAILWAY_SETUP.md` for step-by-step instructions
+### Railway (combined-service topology — the live setup)
+- **2 repo services + managed Postgres.** Railway volumes attach to exactly
+  one service, so the API and worker run together in one `backend` service
+  via `backend/start_combined.sh` (config: `backend/railway.combined.toml`),
+  sharing the `/data` volume. `frontend` is its own service (nginx, proxies
+  `/api` over the private network). A split backend/worker topology requires
+  `STORAGE_BACKEND=s3` — see `RAILWAY_SETUP.md` and `docs/adr/0002`.
+- `alembic upgrade head` runs on service start via `entrypoint.sh`.
+- `DATABASE_URL` is **not** auto-injected: it must be a Railway reference
+  variable (`${{Postgres.DATABASE_URL}}`) on the backend service.
+- Env source of truth: `mcn/registry.yaml` (pushed by `mcn/provision.py`).
 
 ### Vercel (ops dashboard)
 - Root directory: `dashboard/`
