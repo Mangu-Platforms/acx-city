@@ -344,7 +344,7 @@ def apply_pronunciation_rules(
 # "12:30", dates "2024-05-01"), percentages, currency amounts, and
 # identifiers, while ordinary sentence punctuation after a number is fine.
 _NUMBER_TOKEN_RE = re.compile(
-    r"(?<!\w)(?<!\d[.,:/\-])(?<![$€£#%])(\d+)(?!\w)(?![.,:/\-]\d)(?!%)"
+    r"(?<!\w)(?<!\d[.,:/\-])(?<![$\u20ac\u00a3#%])(\d+)(?!\w)(?![.,:/\-]\d)(?!%)"
 )
 _ACRONYM_TOKEN_RE = re.compile(r"(?<![\w.])([A-Z]{2,8})(?!\w)")
 _ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
