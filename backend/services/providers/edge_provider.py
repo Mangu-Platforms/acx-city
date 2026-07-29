@@ -83,10 +83,19 @@ class EdgeProvider(SpeechProvider):
         return voices
 
     def synthesize(self, text: str, voice_id: str, engine: str = "neural") -> bytes:
+        return self.synthesize_with_options(text, voice_id, engine=engine)
+
+    def synthesize_with_options(
+        self, text: str, voice_id: str, engine: str = "neural", *,
+        rate: Optional[str] = None, pitch: Optional[str] = None,
+        volume: Optional[str] = None, style: Optional[str] = None,
+    ) -> bytes:
         import edge_tts
 
         async def _synth() -> bytes:
-            communicate = edge_tts.Communicate(text, voice_id)
+            communicate = edge_tts.Communicate(
+                text, voice_id, rate=rate or "+0%", pitch=pitch or "+0Hz", volume=volume or "+0%"
+            )
             chunks = []
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
