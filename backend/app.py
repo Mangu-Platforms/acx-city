@@ -550,7 +550,12 @@ def health_check():
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "5000"))
+    try:
+        port = int(os.getenv("PORT", "5000"))
+    except ValueError:
+        import sys
+        print("Error: PORT must be a valid integer", file=sys.stderr)
+        sys.exit(1)
     debug = os.getenv("FLASK_ENV") == "development"
     app.run(debug=debug, host=host, port=port)
 

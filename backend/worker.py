@@ -31,9 +31,14 @@ configure_logging()
 init_sentry()
 log = logging.getLogger("audiobook.worker")
 
-POLL_INTERVAL = float(os.getenv("WORKER_POLL_SECONDS", "2"))
-ORPHAN_SWEEP_INTERVAL = float(os.getenv("WORKER_ORPHAN_SWEEP_SECONDS", "60"))
-RETENTION_SWEEP_INTERVAL = float(os.getenv("WORKER_RETENTION_SWEEP_SECONDS", "3600"))
+try:
+    POLL_INTERVAL = float(os.getenv("WORKER_POLL_SECONDS", "2"))
+    ORPHAN_SWEEP_INTERVAL = float(os.getenv("WORKER_ORPHAN_SWEEP_SECONDS", "60"))
+    RETENTION_SWEEP_INTERVAL = float(os.getenv("WORKER_RETENTION_SWEEP_SECONDS", "3600"))
+except ValueError as e:
+    import sys
+    print(f"Error: Invalid worker configuration: {e}", file=sys.stderr)
+    sys.exit(1)
 
 _shutdown = False
 
