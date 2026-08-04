@@ -1,9 +1,12 @@
 """AWS Polly adapter. Only active when AWS credentials are configured."""
 import html
+import logging
 import os
 from typing import Dict, List, Optional
 
 from .base import SpeechProvider
+
+log = logging.getLogger("audiobook.providers.polly")
 
 
 class PollyProvider(SpeechProvider):
@@ -43,7 +46,7 @@ class PollyProvider(SpeechProvider):
         try:
             response = self._get_client().describe_voices(**kwargs)
         except Exception as e:  # noqa: BLE001
-            print(f"[polly] error listing voices: {e}")
+            log.warning("error listing voices: %s", e)
             return []
         return [
             {

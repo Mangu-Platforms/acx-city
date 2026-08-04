@@ -1,9 +1,12 @@
+import logging
 import os
 import uuid
 from typing import Optional
 from werkzeug.utils import secure_filename
 
 from services.text_processor import CHAPTER_MARKER
+
+log = logging.getLogger("audiobook.file_manager")
 
 
 class FileManager:
@@ -79,4 +82,4 @@ class FileManager:
             if os.path.exists(file_path):
                 os.remove(file_path)
         except Exception as e:
-            print(f"Error cleaning up file {file_path}: {e}")
+            log.exception("error cleaning up file %s", file_path)

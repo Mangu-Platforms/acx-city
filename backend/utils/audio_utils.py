@@ -1,9 +1,12 @@
+import logging
 import os
 import subprocess
 from typing import Dict, List
 
 from pydub import AudioSegment
 from pydub.silence import detect_silence
+
+log = logging.getLogger("audiobook.audio")
 
 # Silence detection tuned for TTS audiobook output.
 # -55 dBFS threshold avoids false positives from breath-level noise between
@@ -40,7 +43,7 @@ class AudioUtils:
             combined.export(output_path, format="mp3", bitrate="128k")
             return True
         except Exception as e:
-            print(f"Error merging audio files: {e}")
+            log.exception("error merging audio files: %s", e)
             return False
 
     @staticmethod
@@ -76,11 +79,11 @@ class AudioUtils:
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
-                print(f"ffmpeg concat failed: {result.stderr[-2000:]}")
+                log.error("ffmpeg concat failed: %s", result.stderr[-2000:])
                 return False
             return os.path.exists(output_path) and os.path.getsize(output_path) > 0
         except Exception as e:
-            print(f"Error concatenating audio files: {e}")
+            log.exception("error concatenating audio files: %s", e)
             return False
         finally:
             for tmp in (concat_path, gap_path):
@@ -106,7 +109,7 @@ class AudioUtils:
             normalized.export(output_path, format="mp3", bitrate="128k")
             return True
         except Exception as e:
-            print(f"Error normalizing audio: {e}")
+            log.exception("error normalizing audio: %s", e)
             return False
 
     @staticmethod
@@ -214,9 +217,9 @@ class AudioUtils:
                 except OSError:
                     pass
             if result.returncode != 0:
-                print(f"ffmpeg m4b export failed: {result.stderr[-2000:]}")
+                log.error("ffmpeg m4b export failed: %s", result.stderr[-2000:])
                 return False
             return os.path.exists(output_path) and os.path.getsize(output_path) > 0
         except Exception as e:
-            print(f"Error exporting m4b: {e}")
+            log.exception("error exporting m4b: %s", e)
             return False

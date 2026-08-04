@@ -4,9 +4,12 @@ No API key or account required. Quality is comparable to paid neural TTS,
 which makes it the default engine for personal use.
 """
 import asyncio
+import logging
 from typing import Dict, List, Optional
 
 from .base import SpeechProvider
+
+log = logging.getLogger("audiobook.providers.edge")
 
 # Curated fallback list used when the live voice listing is unreachable.
 _CURATED_VOICES = [
@@ -72,7 +75,7 @@ class EdgeProvider(SpeechProvider):
                 for v in raw
             ]
         except Exception as e:  # noqa: BLE001
-            print(f"[edge] live voice listing failed, using curated list: {e}")
+            log.warning("live voice listing failed, using curated list: %s", e)
         if not voices:
             voices = [
                 {"id": vid, "name": name, "language": lang, "gender": gender, "neural": True}
