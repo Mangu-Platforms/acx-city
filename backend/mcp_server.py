@@ -251,7 +251,7 @@ def acx_cancel_job(job_id: str) -> dict:
         return {"job_id": job.id, "status": job.status.value, "cancel_requested": True}
 
 
-@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": True})
+@mcp.tool(annotations={"destructiveHint": True, "idempotentHint": True})
 def acx_approve_job(job_id: str) -> dict:
     """Approve a QC-held job, promoting needs_review -> succeeded.
 

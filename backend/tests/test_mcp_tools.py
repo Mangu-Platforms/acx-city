@@ -109,6 +109,12 @@ def test_cancel_running_job_is_cooperative(seeded, writes_enabled):
     jid = _make_job(seeded["org_id"], JobStatus.running)
     out = mcp_server.acx_cancel_job(jid)
     assert out["status"] == "running" and out["cancel_requested"] is True
+    # The persisted flag is what the worker's heartbeat checks — assert it
+    # from a fresh session, not the tool's own return value.
+    with session_scope() as s:
+        job = s.get(Job, jid)
+        assert job.cancel_requested is True
+        assert job.status == JobStatus.running
 
 
 def test_cancel_terminal_job(seeded, writes_enabled):
@@ -135,6 +141,16 @@ def test_approve_wrong_state(seeded, writes_enabled):
     assert "error" in out and "queued" in out["error"]
 
 
+def test_reject_wrong_state_and_double_reject(seeded, writes_enabled):
+    out = mcp_server.acx_reject_job(seeded["job_id"])  # still queued
+    assert "error" in out and "queued" in out["error"]
+
+    jid = _make_job(seeded["org_id"], JobStatus.needs_review)
+    assert mcp_server.acx_reject_job(jid)["status"] == "failed"
+    again = mcp_server.acx_reject_job(jid, reason="second")
+    assert "error" in again and "not awaiting review" in again["error"]
+
+
 def test_reject_records_reason(seeded, writes_enabled):
     jid = _make_job(seeded["org_id"], JobStatus.needs_review)
     out = mcp_server.acx_reject_job(jid, reason="bad audio")
@@ -153,8 +169,10 @@ def test_tools_are_registered():
     assert {"acx_health", "acx_list_jobs", "acx_get_job",
             "acx_list_organizations", "acx_usage",
             "acx_cancel_job", "acx_approve_job", "acx_reject_job"} <= set(tools)
-    # Read tools advertise readOnlyHint; write tools must not.
+    # Read tools advertise readOnlyHint; write tools must not — and all three
+    # write tools perform irreversible transitions, so they carry
+    # destructiveHint (approve releases QC-held audio with no path back).
     assert tools["acx_health"].annotations.readOnlyHint is True
-    assert not tools["acx_cancel_job"].annotations.readOnlyHint
-    assert not tools["acx_approve_job"].annotations.readOnlyHint
-    assert not tools["acx_reject_job"].annotations.readOnlyHint
+    for name in ("acx_cancel_job", "acx_approve_job", "acx_reject_job"):
+        assert not tools[name].annotations.readOnlyHint
+        assert tools[name].annotations.destructiveHint is True
