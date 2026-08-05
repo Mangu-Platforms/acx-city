@@ -11,7 +11,6 @@ import copy
 import logging
 import os
 from datetime import timedelta
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,7 +25,6 @@ from db.voice_models import (
 )
 from .embedding_store import EmbeddingStore
 from .generative_provider import (
-    GenerativeProviderError,
     GenerativeVoiceProvider,
     RemoteGenerativeVoiceProvider,
 )

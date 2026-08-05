@@ -7,6 +7,9 @@
 #   MCP_ENABLED  — "true" (refuses to start otherwise)
 #   MCP_API_KEY  — openssl rand -hex 32; MCP clients send it as a Bearer token
 #   DATABASE_URL — auto-injected by Railway from the Postgres service
+# Optional:
+#   MCP_WRITE_ENABLED — "true" to allow the cancel/approve/reject write tools;
+#                       unset/false keeps the server read-only
 #
 # MCP clients connect to:  https://<this-service-domain>/mcp
 #   headers: { "Authorization": "Bearer <MCP_API_KEY>" }

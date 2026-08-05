@@ -1,14 +1,21 @@
 """acxcity_mcp — MCP server exposing the audiobook platform to AI agents.
 
-Read-only operator tools over the existing system of record. Runs as its own
-process (like worker.py), speaking streamable HTTP so remote MCP clients
-(Claude, Cursor, etc.) can connect over the network.
+Operator tools over the existing system of record. Runs as its own process
+(like worker.py), speaking streamable HTTP so remote MCP clients (Claude,
+Cursor, etc.) can connect over the network.
+
+Read tools (health, jobs, orgs, usage) are always available. Write tools
+(cancel/approve/reject) reuse the same queue primitives as the REST API and
+are additionally gated by MCP_WRITE_ENABLED — with it unset they are listed
+but every call returns an error, so a leaked key on a read-only deployment
+still cannot mutate jobs.
 
 Gating (both required, per the MANGU MCN baseline):
     MCP_ENABLED=true   — refuses to start otherwise
     MCP_API_KEY=...    — clients must send "Authorization: Bearer <key>"
 
 Optional:
+    MCP_WRITE_ENABLED=true — allow the write tools (default: read-only)
     MCP_HOST (default 0.0.0.0), MCP_PORT (default 8765; Railway injects PORT)
 
 Run: python mcp_server.py
@@ -26,6 +33,7 @@ from sqlalchemy import func, select, text
 from billing.usage import month_usage, quota_for
 from db.models import Job, JobStatus, Organization
 from db.session import session_scope
+from jobs.queue import approve_reviewed_job, reject_reviewed_job, request_cancel
 from observability.logging_setup import configure_logging
 from services.providers.registry import ProviderRegistry
 
@@ -196,6 +204,96 @@ def acx_usage(organization_id: str, period: Optional[str] = None) -> dict:
         usage["quota"] = quota or None
         usage["remaining"] = max(quota - usage["characters"], 0) if quota else None
         return usage
+
+
+_WRITES_DISABLED_ERROR = (
+    "Write tools are disabled on this deployment. "
+    "Set MCP_WRITE_ENABLED=true on the MCP service to allow cancel/approve/reject."
+)
+
+
+def _writes_enabled() -> bool:
+    return os.getenv("MCP_WRITE_ENABLED", "").lower() == "true"
+
+
+def _load_job(session, job_id: str) -> tuple[Optional[Job], Optional[dict]]:
+    """Fetch a job for a write tool, or an error dict explaining what's wrong."""
+    if not _writes_enabled():
+        return None, {"error": _WRITES_DISABLED_ERROR}
+    if not _valid_uuid(job_id):
+        return None, {"error": f"'{job_id}' is not a valid job UUID. "
+                               "Use acx_list_jobs to browse ids."}
+    job = session.get(Job, job_id)
+    if job is None:
+        return None, {"error": f"Job '{job_id}' not found. Use acx_list_jobs to browse ids."}
+    return job, None
+
+
+@mcp.tool(annotations={"destructiveHint": True, "idempotentHint": True})
+def acx_cancel_job(job_id: str) -> dict:
+    """Cancel a job. Queued jobs are canceled immediately; running jobs stop
+    cooperatively at their next heartbeat (status stays "running" with
+    cancel_requested set until the worker notices).
+
+    Requires MCP_WRITE_ENABLED=true on the server. Terminal jobs (succeeded,
+    needs_review, failed, canceled) cannot be canceled.
+
+    Args:
+        job_id: the job UUID (from acx_list_jobs).
+    """
+    with session_scope() as s:
+        job, err = _load_job(s, job_id)
+        if err:
+            return err
+        if job.is_terminal:
+            return {"error": f"Job already {job.status.value}; nothing to cancel."}
+        request_cancel(s, job)
+        return {"job_id": job.id, "status": job.status.value, "cancel_requested": True}
+
+
+@mcp.tool(annotations={"destructiveHint": False, "idempotentHint": True})
+def acx_approve_job(job_id: str) -> dict:
+    """Approve a QC-held job, promoting needs_review -> succeeded.
+
+    Requires MCP_WRITE_ENABLED=true on the server. Only jobs in needs_review
+    (held by the QC gate) can be approved; use acx_get_job to inspect the
+    per-chapter QC issues first.
+
+    Args:
+        job_id: the job UUID (from acx_list_jobs, status needs_review).
+    """
+    with session_scope() as s:
+        job, err = _load_job(s, job_id)
+        if err:
+            return err
+        try:
+            approve_reviewed_job(s, job)
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"job_id": job.id, "status": job.status.value}
+
+
+@mcp.tool(annotations={"destructiveHint": True, "idempotentHint": True})
+def acx_reject_job(job_id: str, reason: Optional[str] = None) -> dict:
+    """Reject a QC-held job, marking needs_review -> failed.
+
+    Requires MCP_WRITE_ENABLED=true on the server. Only jobs in needs_review
+    (held by the QC gate) can be rejected; use acx_get_job to inspect the
+    per-chapter QC issues first.
+
+    Args:
+        job_id: the job UUID (from acx_list_jobs, status needs_review).
+        reason: optional human-readable reason, recorded on the job.
+    """
+    with session_scope() as s:
+        job, err = _load_job(s, job_id)
+        if err:
+            return err
+        try:
+            reject_reviewed_job(s, job, reason or "")
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"job_id": job.id, "status": job.status.value, "reason_recorded": job.error}
 
 
 def _require_auth_middleware(app):

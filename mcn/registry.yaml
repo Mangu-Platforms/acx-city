@@ -54,6 +54,9 @@ repos:
             CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
             MCP_ENABLED: "true"
             MCP_API_KEY: ${secret:MCP_API_KEY}
+            # Flip to "true" to allow the MCP cancel/approve/reject write
+            # tools; the server is read-only without it.
+            MCP_WRITE_ENABLED: "false"
         # React SPA behind nginx; proxies /api to the backend over Railway's
         # private network (frontend/nginx.conf.template).
         frontend:

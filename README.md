@@ -203,9 +203,11 @@ Remaining items, in rough priority order:
 - **RLS** if/when Supabase becomes the primary database (separate ADR).
 - **MCP network (MCN)**: `backend/mcp_server.py` is the first node — a
   streamable-HTTP MCP server (gated by `MCP_ENABLED` + `MCP_API_KEY`, see
-  `backend/railway.mcp.toml`) exposing read-only tools: `acx_health`,
-  `acx_list_jobs`, `acx_get_job`, `acx_list_organizations`, `acx_usage`.
-  Next: write tools (cancel/approve) and sibling repos joining the network.
+  `backend/railway.mcp.toml`) exposing read tools (`acx_health`,
+  `acx_list_jobs`, `acx_get_job`, `acx_list_organizations`, `acx_usage`) and,
+  behind the additional `MCP_WRITE_ENABLED=true` gate, write tools
+  (`acx_cancel_job`, `acx_approve_job`, `acx_reject_job`) that reuse the REST
+  API's queue semantics. Next: sibling repos joining the network.
 
 See the Revamp Blueprint for the full target architecture and delivery roadmap.
 
