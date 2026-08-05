@@ -39,4 +39,3 @@ like three tuning forks struck in sequence.
 Behind the first door: truth.
 Behind the second door: memory.
 Behind the third door: home.
-```

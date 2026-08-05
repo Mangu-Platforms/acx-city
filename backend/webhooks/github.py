@@ -45,7 +45,9 @@ def _verify_signature(payload: bytes, sig_header: str | None) -> bool:
     """
     secret = _secret()
     if not secret:
-        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("FLASK_ENV") == "production":
+        from utils.runtime_env import is_production
+
+        if is_production():
             log.error(
                 "GITHUB_WEBHOOK_SECRET is not configured — rejecting webhook. "
                 "Set it in the service env and in the GitHub App's webhook settings."

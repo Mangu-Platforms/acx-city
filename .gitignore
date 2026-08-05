@@ -30,3 +30,4 @@ backend/cache/
 backend/storage_data/
 backend/*.db
 data/
+runs/

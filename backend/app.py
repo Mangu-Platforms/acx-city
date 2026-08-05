@@ -46,6 +46,11 @@ load_dotenv()
 configure_logging()
 init_sentry()
 init_engine()
+# Fail fast on a missing prod JWT secret instead of 500ing on first login.
+if os.getenv("AUTH_MODE", "legacy").lower() != "supabase":
+    from auth import security as _auth_security
+
+    _auth_security.ensure_configured()
 
 # Signed download links expire after this many seconds.
 SIGNED_URL_TTL = int(os.getenv("SIGNED_URL_TTL_SECONDS", "3600"))

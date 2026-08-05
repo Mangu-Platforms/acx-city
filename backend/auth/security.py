@@ -8,37 +8,35 @@ import bcrypt
 import jwt
 
 from db.base import utcnow
+from utils.runtime_env import is_production
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL = timedelta(hours=int(os.getenv("ACCESS_TOKEN_HOURS", "12")))
-
-
-def _is_production() -> bool:
-    """True on any signal that this is a deployed environment.
-
-    FLASK_ENV alone is not enough: the Railway deploy config never sets it,
-    so the old FLASK_ENV-only guard could silently fall back to the dev
-    secret in production (forgeable tokens). RAILWAY_ENVIRONMENT is injected
-    by Railway on every deploy; FLASK_DEBUG=0 is an explicit prod signal.
-    """
-    return bool(
-        os.getenv("RAILWAY_ENVIRONMENT")
-        or os.getenv("FLASK_DEBUG") == "0"
-        or os.getenv("FLASK_ENV") == "production"
-    )
 
 
 def _secret() -> str:
     secret = os.getenv("JWT_SECRET")
     if not secret:
         # Fail loud in production; allow a dev default only outside prod.
-        if _is_production():
+        # (The old FLASK_ENV-only check never fired on Railway, silently
+        # falling back to the forgeable dev secret.)
+        if is_production():
             raise RuntimeError(
                 "JWT_SECRET must be set in production. "
                 "Set it in backend/.env or as a platform secret."
             )
         return "dev-insecure-secret-change-me"
     return secret
+
+
+def ensure_configured() -> None:
+    """Fail fast at process start when production lacks JWT_SECRET.
+
+    Without this the guard in _secret() only fires lazily on the first
+    token operation — a misconfigured deploy would boot "healthy" and then
+    500 on every auth request.
+    """
+    _secret()
 
 
 def hash_password(plain: str) -> str:

@@ -36,17 +36,17 @@ def database_url() -> str:
     raw = os.getenv("DATABASE_URL")
     if not raw:
         # An empty string used to reach SQLAlchemy and die with the cryptic
-        # "Could not parse URL from ''". Treat empty as unset: fall back to
-        # SQLite in dev, but fail fast with a clear message in production,
-        # where a blank value means a broken Railway reference variable and
-        # silently writing to container-local SQLite would lose data.
-        if raw == "" and (
-            os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("FLASK_ENV") == "production"
-        ):
+        # "Could not parse URL from ''". Treat empty/unset as "use SQLite"
+        # in dev, but fail fast in production: there it means a broken or
+        # missing Railway reference variable, and silently writing to
+        # container-local SQLite would lose data on the next deploy.
+        from utils.runtime_env import is_production
+
+        if is_production():
             raise RuntimeError(
-                "DATABASE_URL is set but empty. Set it to the Postgres URL "
-                "(Railway reference variable ${{Postgres.DATABASE_URL}}), or "
-                "unset it entirely to use local SQLite in development."
+                "DATABASE_URL is missing or empty. Set it to the Postgres URL "
+                "(Railway reference variable ${{Postgres.DATABASE_URL}}); "
+                "local SQLite is only used in development."
             )
         return DEFAULT_URL
     return _normalize_url(raw)

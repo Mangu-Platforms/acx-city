@@ -14,15 +14,25 @@ import time
 from typing import Optional
 from urllib.parse import quote
 
+from utils.runtime_env import is_production
+
 from .base import SignedURL, StorageBackend, StorageError
 
 
 class LocalStorage(StorageBackend):
     def __init__(self, root: Optional[str] = None, secret: Optional[str] = None, public_base: str = ""):
         self.root = root or os.getenv("STORAGE_LOCAL_ROOT", "storage_data")
-        # Signing secret; falls back to JWT_SECRET, then a dev default.
-        self.secret = (secret or os.getenv("STORAGE_SIGNING_SECRET")
-                       or os.getenv("JWT_SECRET") or "dev-insecure-secret-change-me")
+        # Signing secret; falls back to JWT_SECRET, then a dev-only default —
+        # in production a guessable signing secret means forgeable download
+        # links, so refuse to start without a real one.
+        self.secret = secret or os.getenv("STORAGE_SIGNING_SECRET") or os.getenv("JWT_SECRET") or ""
+        if not self.secret:
+            if is_production():
+                raise StorageError(
+                    "STORAGE_SIGNING_SECRET (or JWT_SECRET) must be set in "
+                    "production — signed download URLs would be forgeable."
+                )
+            self.secret = "dev-insecure-secret-change-me"
         # Prefix for generated URLs; empty = same-origin relative path.
         self.public_base = public_base or os.getenv("PUBLIC_BASE_URL", "")
         os.makedirs(self.root, exist_ok=True)

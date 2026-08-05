@@ -40,6 +40,11 @@ Standard lint/test/build/run commands live in `README.md` and
   WebSocket. Older pins (`6.1.12`) get a `403 Invalid response status` and every
   job fails "chunk synthesis failed after 3 attempts"; the pinned `edge-tts`
   (7.x) works. Requires outbound egress.
+- **Pipeline orchestrator (`pipeline/`):** a separate top-level package with
+  its own CLI (`python -m pipeline`, run from the repo root with the backend
+  venv active) and its own suite (`python -m pytest pipeline/tests -q` from
+  the repo root — CI runs it in the backend job). Its deps (python-docx,
+  pdfminer.six) come from `backend/requirements.txt`.
 - **Job status vocabulary:** the backend emits `queued`/`running`/`succeeded`
   (chapters: `done`). The SPA accepts these plus the older
   `started`/`processing`/`completed` names (fixed on main — an earlier bug

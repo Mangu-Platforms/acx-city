@@ -167,6 +167,23 @@ Work (auth required, org-scoped — send `Authorization: Bearer <token>`):
   sign URLs that point directly at the object store instead.
 - `GET /api/health` — health check incl. database connectivity
 
+## Production pipeline orchestrator (`pipeline/`)
+
+A top-level package implementing the audiobook automation spec's orchestrator
+spine: a twelve-state machine with atomic, checksummed `state.json`
+persistence, an append-only JSONL run log, a checkpoint protocol for human
+sign-offs (request/response files under `checkpoints/`), a content-addressed
+synthesis cache, and a fully implemented Stage 0 (docx/txt/pdf extraction,
+scrubbing, chapterization). Stages 1–8 are wired placeholders pending the
+remaining spec volumes.
+
+```bash
+# from the repo root, with backend/.venv active (deps come from backend/requirements.txt)
+python -m pipeline <manuscript.docx|txt|pdf> [--run-root DIR] [--no-auto]
+python -m pipeline --resume <run-root>          # crash-safe resume
+python -m pytest pipeline/tests -q              # its test suite (41 tests)
+```
+
 ## Webhook security
 
 The backend receives GitHub App events at `POST /api/webhooks/github` and

@@ -24,15 +24,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from db import init_engine, session_scope
-from jobs import queue as q
-from jobs.pipeline import JobCanceled, run_job
-from observability import configure_logging, init_sentry, request_id_var
-from services.voice_city import voice_optimizer as voice_optimizer
-
-# The worker is its own entry point: load backend/.env before anything reads
-# env vars (the API does the same in app.py).
+# The worker is its own entry point: load backend/.env BEFORE the app imports
+# below — jobs.pipeline and voice_optimizer read env vars at import time.
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from db import init_engine, session_scope  # noqa: E402
+from jobs import queue as q  # noqa: E402
+from jobs.pipeline import JobCanceled, run_job  # noqa: E402
+from observability import configure_logging, init_sentry, request_id_var  # noqa: E402
+from services.voice_city import voice_optimizer as voice_optimizer  # noqa: E402
 
 configure_logging()
 init_sentry()
