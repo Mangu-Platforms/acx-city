@@ -13,12 +13,30 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL = timedelta(hours=int(os.getenv("ACCESS_TOKEN_HOURS", "12")))
 
 
+def _is_production() -> bool:
+    """True on any signal that this is a deployed environment.
+
+    FLASK_ENV alone is not enough: the Railway deploy config never sets it,
+    so the old FLASK_ENV-only guard could silently fall back to the dev
+    secret in production (forgeable tokens). RAILWAY_ENVIRONMENT is injected
+    by Railway on every deploy; FLASK_DEBUG=0 is an explicit prod signal.
+    """
+    return bool(
+        os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("FLASK_DEBUG") == "0"
+        or os.getenv("FLASK_ENV") == "production"
+    )
+
+
 def _secret() -> str:
     secret = os.getenv("JWT_SECRET")
     if not secret:
         # Fail loud in production; allow a dev default only outside prod.
-        if os.getenv("FLASK_ENV") == "production":
-            raise RuntimeError("JWT_SECRET must be set in production")
+        if _is_production():
+            raise RuntimeError(
+                "JWT_SECRET must be set in production. "
+                "Set it in backend/.env or as a platform secret."
+            )
         return "dev-insecure-secret-change-me"
     return secret
 

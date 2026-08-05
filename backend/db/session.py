@@ -33,7 +33,23 @@ def _normalize_url(url: str) -> str:
 
 
 def database_url() -> str:
-    return _normalize_url(os.getenv("DATABASE_URL", DEFAULT_URL))
+    raw = os.getenv("DATABASE_URL")
+    if not raw:
+        # An empty string used to reach SQLAlchemy and die with the cryptic
+        # "Could not parse URL from ''". Treat empty as unset: fall back to
+        # SQLite in dev, but fail fast with a clear message in production,
+        # where a blank value means a broken Railway reference variable and
+        # silently writing to container-local SQLite would lose data.
+        if raw == "" and (
+            os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("FLASK_ENV") == "production"
+        ):
+            raise RuntimeError(
+                "DATABASE_URL is set but empty. Set it to the Postgres URL "
+                "(Railway reference variable ${{Postgres.DATABASE_URL}}), or "
+                "unset it entirely to use local SQLite in development."
+            )
+        return DEFAULT_URL
+    return _normalize_url(raw)
 
 
 def is_postgres() -> bool:

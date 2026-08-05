@@ -18,6 +18,8 @@ secrets:
   JWT_SECRET: {bytes: 32}
   STORAGE_SIGNING_SECRET: {bytes: 32}
   MCP_API_KEY: {bytes: 32}
+  # Must also be pasted into the GitHub App's webhook settings ("Secret").
+  GITHUB_WEBHOOK_SECRET: {bytes: 32}
 
 repos:
   acx-city:
@@ -54,6 +56,7 @@ repos:
             CORS_ALLOW_ORIGINS: ${url:vercel:dashboard}
             MCP_ENABLED: "true"
             MCP_API_KEY: ${secret:MCP_API_KEY}
+            GITHUB_WEBHOOK_SECRET: ${secret:GITHUB_WEBHOOK_SECRET}
             # Flip to "true" to allow the MCP cancel/approve/reject write
             # tools; the server is read-only without it.
             MCP_WRITE_ENABLED: "false"

@@ -22,14 +22,14 @@ with **no Docker and no PostgreSQL** — develop against SQLite;
 Standard lint/test/build/run commands live in `README.md` and
 `agent-skills/acx-city/SKILL.md` (Verification section). Non-obvious caveats:
 
-- **Backend DB (SQLite):** `.env.example` ships `DATABASE_URL=` (empty), which
-  makes SQLAlchemy raise `Could not parse URL from ''` — an empty value is NOT
-  treated as "unset". For local dev copy it to `backend/.env` and set
-  `DATABASE_URL=sqlite:///./audiobook.db` explicitly, plus a non-empty
-  `JWT_SECRET`. Then run `alembic upgrade head` once (from `backend/`, venv
-  active) to create the schema before starting the API/worker. The
-  Postgres-only `FOR UPDATE SKIP LOCKED` test auto-skips on SQLite (expect
-  `1 skipped` in pytest).
+- **Backend DB (SQLite):** an unset or empty `DATABASE_URL` falls back to
+  `sqlite:///./audiobook.db` in dev (in production an empty value is a hard
+  error — it means a broken Railway reference variable). For local dev copy
+  `.env.example` to `backend/.env` and set a non-empty `JWT_SECRET`. Then run
+  `alembic upgrade head` once (from `backend/`, venv active) to create the
+  schema before starting the API/worker. The Postgres-only
+  `FOR UPDATE SKIP LOCKED` test auto-skips on SQLite (expect `1 skipped` in
+  pytest).
 - **Run the app (dev):** with `backend/.venv` active, `python app.py` (API on
   `:5000`), `python worker.py` (job worker, second terminal). `frontend`:
   `npm run dev` (`:5173`, proxies `/api` to `:5000`). `dashboard`:

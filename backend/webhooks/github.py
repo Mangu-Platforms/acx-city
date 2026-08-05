@@ -39,12 +39,19 @@ def _secret() -> bytes | None:
 def _verify_signature(payload: bytes, sig_header: str | None) -> bool:
     """Return True if the payload matches the HMAC-SHA256 signature.
 
-    If GITHUB_WEBHOOK_SECRET is not set, verification is skipped and all
-    requests are accepted — only appropriate for local dev.
+    If GITHUB_WEBHOOK_SECRET is not set: in production every request is
+    rejected (the safety rules forbid skipping verification there); in dev
+    it is skipped with a warning so local experiments still work.
     """
     secret = _secret()
     if not secret:
-        log.warning("GITHUB_WEBHOOK_SECRET not set — skipping webhook signature verification")
+        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("FLASK_ENV") == "production":
+            log.error(
+                "GITHUB_WEBHOOK_SECRET is not configured — rejecting webhook. "
+                "Set it in the service env and in the GitHub App's webhook settings."
+            )
+            return False
+        log.warning("GITHUB_WEBHOOK_SECRET not set — skipping webhook signature verification (dev only)")
         return True
     if not sig_header or not sig_header.startswith("sha256="):
         return False

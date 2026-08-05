@@ -167,6 +167,17 @@ Work (auth required, org-scoped — send `Authorization: Bearer <token>`):
   sign URLs that point directly at the object store instead.
 - `GET /api/health` — health check incl. database connectivity
 
+## Webhook security
+
+The backend receives GitHub App events at `POST /api/webhooks/github` and
+verifies every request's `X-Hub-Signature-256` HMAC against
+`GITHUB_WEBHOOK_SECRET`. In production the secret is **required** — with it
+unset the endpoint rejects all requests; in dev, verification is skipped with
+a warning so local experiments work. Generate one with
+`openssl rand -hex 32` and set the same value in both the backend env
+(`GITHUB_WEBHOOK_SECRET`, see `mcn/registry.yaml`) and the GitHub App's
+webhook settings.
+
 ## Testing
 
 ```bash

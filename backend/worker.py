@@ -20,12 +20,19 @@ import signal
 import socket
 import time
 import uuid
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from db import init_engine, session_scope
 from jobs import queue as q
 from jobs.pipeline import JobCanceled, run_job
 from observability import configure_logging, init_sentry, request_id_var
 from services.voice_city import voice_optimizer as voice_optimizer
+
+# The worker is its own entry point: load backend/.env before anything reads
+# env vars (the API does the same in app.py).
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 configure_logging()
 init_sentry()

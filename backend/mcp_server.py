@@ -26,18 +26,24 @@ import hmac
 import os
 import sys
 import uuid as _uuid
+from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from sqlalchemy import func, select, text
 
-from billing.usage import month_usage, quota_for
-from db.models import Job, JobStatus, Organization
-from db.session import session_scope
-from jobs.queue import approve_reviewed_job, reject_reviewed_job, request_cancel
-from observability.logging_setup import configure_logging
-from services.providers.registry import ProviderRegistry
+# Own entry point: load backend/.env before any env reads below (MCP_HOST,
+# PORT, MCP_ENABLED, MCP_API_KEY), same as app.py does for the API.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from mcp.server.fastmcp import FastMCP
+from billing.usage import month_usage, quota_for  # noqa: E402
+from db.models import Job, JobStatus, Organization  # noqa: E402
+from db.session import session_scope  # noqa: E402
+from jobs.queue import approve_reviewed_job, reject_reviewed_job, request_cancel  # noqa: E402
+from observability.logging_setup import configure_logging  # noqa: E402
+from services.providers.registry import ProviderRegistry  # noqa: E402
+
+from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 registry = ProviderRegistry()
 
