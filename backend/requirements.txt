@@ -1,12 +1,12 @@
 flask==3.0.3
-flask-cors==4.0.1
+flask-cors==6.0.5
 boto3==1.35.34
 botocore==1.35.34
 pydub==0.25.1
 python-dotenv==1.0.1
 Werkzeug==3.0.3
 requests==2.32.3
-pdfminer.six==20240706
+pdfminer.six==20260107
 python-docx==1.1.2
 edge-tts==7.2.8
 gunicorn==22.0.0
@@ -14,7 +14,7 @@ SQLAlchemy==2.0.35
 alembic==1.13.3
 psycopg[binary]==3.2.3
 bcrypt==4.2.0
-PyJWT==2.10.1
+PyJWT==2.13.0
 pytest==8.3.2
 mcp==1.28.1
 # Optional: error monitoring (enabled only when SENTRY_DSN is set).

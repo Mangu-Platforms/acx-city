@@ -13,7 +13,9 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def _env_defaults():
-    os.environ.setdefault("JWT_SECRET", "test-secret")
+    # 32+ bytes: PyJWT >= 2.13 warns on HMAC keys shorter than RFC 7518's
+    # recommended minimum for HS256.
+    os.environ.setdefault("JWT_SECRET", "test-secret-0123456789abcdef0123456789abcdef")
     os.environ.setdefault("FLASK_ENV", "testing")
     # Keep synthesis output/cache off the (read-restricted) mounted fs in sandbox.
     tmp = tempfile.mkdtemp(prefix="ab_test_")
