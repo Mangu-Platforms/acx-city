@@ -8,6 +8,7 @@ Foundation phase changes vs the prototype:
     the caller must be a member of the owning organization.
 """
 import os
+import uuid
 
 from dotenv import load_dotenv
 from flask import Flask, g, jsonify, redirect, request, send_file
@@ -546,6 +547,111 @@ def health_check():
         "database": "ok" if db_ok else "unreachable",
         "providers": registry.describe_all(),
     }), (200 if db_ok else 503)
+
+
+# --------------------------------------------------------------------------- #
+# EPUB Generation (authenticated, org-scoped)
+# --------------------------------------------------------------------------- #
+@app.route("/api/export/epub", methods=["POST"])
+@require_auth
+def generate_epub():
+    """Generate EPUB from project chapters.
+    
+    Request body:
+    {
+        "title": "Book Title",
+        "author": "Author Name",
+        "chapters": [
+            {"title": "Chapter 1", "content": "..."},
+            ...
+        ]
+    }
+    """
+    from services.epub_generator import EPUBGenerator
+    identity = current_identity()
+    data = request.json or {}
+    
+    title = data.get("title", "Untitled")
+    author = data.get("author", "Unknown")
+    chapters = data.get("chapters", [])
+    
+    if not chapters:
+        return jsonify({"error": "No chapters provided"}), 400
+    
+    try:
+        generator = EPUBGenerator.from_chapters_list(title, author, chapters)
+        epub_bytes = generator.to_bytes()
+        
+        # Optionally store in object storage
+        storage_key = f"epub/{identity.org.id}/{uuid.uuid4().hex}.epub"
+        storage = get_storage()
+        storage.put_bytes(storage_key, epub_bytes)
+        
+        return jsonify({
+            "success": True,
+            "size": len(epub_bytes),
+            "storage_key": storage_key,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/jobs/<job_id>/export/epub", methods=["GET"])
+@require_auth
+def export_job_as_epub(job_id):
+    """Export a completed synthesis job as EPUB.
+    
+    Uses the job's chapters data to generate an EPUB file.
+    """
+    from services.epub_generator import EPUBGenerator
+    
+    job = _get_owned_job(job_id)
+    if job.status != JobStatus.succeeded:
+        return jsonify({"error": "Job must be succeeded to export"}), 409
+    
+    if not job.project or not job.project.title:
+        return jsonify({"error": "Missing project metadata"}), 400
+    
+    try:
+        # Load chapters from job results
+        chapters_data = []
+        for result in job.chapter_results:
+            if result.chapter_title:
+                chapters_data.append({
+                    "title": result.chapter_title,
+                    "content": result.text_content or ""
+                })
+        
+        if not chapters_data:
+            return jsonify({"error": "No chapter content available"}), 404
+        
+        # Generate EPUB
+        generator = EPUBGenerator.from_chapters_list(
+            job.project.title,
+            job.project.author or "Unknown",
+            chapters_data
+        )
+        epub_bytes = generator.to_bytes()
+        
+        # Optionally store in object storage
+        storage_key = f"epub/{job.organization_id}/{job_id}.epub"
+        storage = get_storage()
+        storage.put_bytes(storage_key, epub_bytes)
+        
+        download_name = f"{job.project.title.replace(' ', '_')}.epub"
+        signed = storage.signed_url(storage_key, expires_in=SIGNED_URL_TTL, download_name=download_name)
+        
+        if request.args.get("redirect") == "1":
+            return redirect(signed.url, code=302)
+        
+        return jsonify({
+            "success": True,
+            "url": signed.url,
+            "expires_in": signed.expires_in,
+            "size": len(epub_bytes),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
