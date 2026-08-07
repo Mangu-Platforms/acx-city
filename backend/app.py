@@ -549,6 +549,62 @@ def health_check():
     }), (200 if db_ok else 503)
 
 
+@app.route("/api/metrics", methods=["GET"])
+def metrics():
+    """Prometheus-compatible metrics endpoint.
+
+    Returns basic platform metrics in a format compatible with Prometheus scraping.
+    """
+    from db.models import Job, JobStatus, Organization
+    from sqlalchemy import func, text
+
+    try:
+        # Job counts by status
+        status_counts = dict(
+            g.db.query(Job.status, func.count(Job.id))
+            .group_by(Job.status)
+            .all()
+        )
+
+        # Total organizations
+        org_count = g.db.query(func.count(Organization.id)).scalar() or 0
+
+        # Current month usage
+        from billing.usage import month_usage
+        now = __import__("datetime").datetime.now()
+        period = now.strftime("%Y-%m")
+        total_chars = 0
+        total_cost = 0.0
+        for org in g.db.query(Organization).all():
+            usage = month_usage(g.db, org.id, period)
+            total_chars += usage.get("characters", 0)
+            total_cost += usage.get("cost_usd", 0.0)
+
+        lines = [
+            "# HELP acx_jobs_total Total jobs by status",
+            "# TYPE acx_jobs_total gauge",
+        ]
+        for status, count in status_counts.items():
+            lines.append(f'acx_jobs_total{{status="{status}"}} {count}')
+
+        lines.extend([
+            "# HELP acx_organizations_total Total organizations",
+            "# TYPE acx_organizations_total gauge",
+            f"acx_organizations_total {org_count}",
+            "# HELP acx_characters_used_current_month Characters used this month",
+            "# TYPE acx_characters_used_current_month gauge",
+            f"acx_characters_used_current_month {total_chars}",
+            "# HELP acx_cost_usd_current_month Cost in USD this month",
+            "# TYPE acx_cost_usd_current_month gauge",
+            f"acx_cost_usd_current_month {total_cost}",
+        ])
+
+        return "\n".join(lines) + "\n", 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+    except Exception as exc:
+        return f"# ERROR: {exc}\n", 500, {"Content-Type": "text/plain"}
+
+
 # --------------------------------------------------------------------------- #
 # EPUB Generation (authenticated, org-scoped)
 # --------------------------------------------------------------------------- #
