@@ -38,6 +38,8 @@ from storage import get_storage
 from observability import configure_logging, init_sentry, new_request_id, request_id_var
 from webhooks import github_bp
 from voice_city import voice_city_bp
+from services.voice_catalog_endpoints import voice_catalog_bp
+from services.streaming import create_streaming_blueprint
 from services.voice_city.production import (
     VoiceProductionError, attach_voice_snapshot, load_voice_snapshot,
     resolve_voice_version_for_request,
@@ -57,6 +59,11 @@ SYNTHESIZE_RATE_WINDOW = int(os.getenv("SYNTHESIZE_RATE_WINDOW_SECONDS", "60"))
 app = Flask(__name__)
 app.register_blueprint(github_bp)
 app.register_blueprint(voice_city_bp)
+app.register_blueprint(voice_catalog_bp)
+
+# Streaming blueprint (lazy init — needs provider registry)
+streaming_bp = create_streaming_blueprint()
+app.register_blueprint(streaming_bp)
 
 # Scoped CORS (blueprint rescue item), defaults to the local dev origin.
 allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").strip()

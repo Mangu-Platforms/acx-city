@@ -4,13 +4,15 @@ import { VoiceSelector } from './components/VoiceSelector'
 import { ProgressTracker } from './components/ProgressTracker'
 import { AudioPlayer } from './components/AudioPlayer'
 import { VoiceCityStudio } from './components/voice-city/VoiceCityStudio'
+import { VoiceCatalog, VoiceCloneWorkbench, LexiconEditor, CharacterPanel, MultiTrackStudio } from './components/voxengine'
+import { Navigation } from './components/Navigation'
 import { audiobookAPI } from './services/api'
 import { TaskStatus, SynthesisRequest, UploadResponse } from './types'
 import type { VoiceCitySelection } from './types/voice-city'
 import { Book, Dna } from 'lucide-react'
 import { AuthGate, LogoutButton } from './components/AuthGate'
 
-type Workspace = 'production' | 'voice-city'
+type Workspace = 'production' | 'voice-city' | 'voices' | 'clone' | 'studio' | 'lexicon' | 'characters'
 const ACTIVE_STATUSES = new Set(['started', 'processing', 'queued', 'running'])
 const TERMINAL_STATUSES = new Set(['completed', 'succeeded', 'needs_review', 'failed', 'canceled'])
 
@@ -114,6 +116,48 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
     return <VoiceCityStudio manuscriptText={text} onUseVoice={handleVoiceCitySelection} onReturnToProduction={() => setWorkspace('production')} />
   }
 
+  if (workspace === 'voices') {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <header className="border-b bg-white shadow-sm">
+          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="flex h-16 items-center justify-between gap-4">
+              <Navigation current={workspace} onNavigate={(p) => setWorkspace(p as Workspace)} />
+              <LogoutButton onLogout={onLogout} email={userEmail} />
+            </div>
+          </div>
+        </header>
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+          <VoiceCatalog onSelect={(v) => { setProvider(v.provider); setSelectedVoice(v.provider_voice_id || ''); setWorkspace('production') }} />
+        </main>
+      </div>
+    )
+  }
+
+  if (workspace === 'clone') {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <header className="border-b bg-white shadow-sm">
+          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="flex h-16 items-center justify-between gap-4">
+              <Navigation current={workspace} onNavigate={(p) => setWorkspace(p as Workspace)} />
+              <LogoutButton onLogout={onLogout} email={userEmail} />
+            </div>
+          </div>
+        </header>
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+          <VoiceCloneWorkbench organizationId={''} />
+        </main>
+      </div>
+    )
+  }
+
+  if (workspace === 'studio') {
+    return (
+      <MultiTrackStudio projectId={''} jobId={currentTask?.task_id || ''} />
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="border-b bg-white shadow-sm">
@@ -123,10 +167,8 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
               <Book className="h-8 w-8 text-blue-600" />
               <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">Audiobook Producer</h1>
             </div>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setWorkspace('voice-city')} className="flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"><Dna className="h-4 w-4 text-cyan-300" /> Voice City</button>
-              <LogoutButton onLogout={onLogout} email={userEmail} />
-            </div>
+            <Navigation current={workspace} onNavigate={(p) => setWorkspace(p as Workspace)} />
+            <LogoutButton onLogout={onLogout} email={userEmail} />
           </div>
         </div>
       </header>
