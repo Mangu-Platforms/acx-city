@@ -29,5 +29,5 @@ pyloudnorm==0.1.1
 # Uncomment to install; the app imports it lazily so it is not required.
 # sentry-sdk==2.14.0
 # Optional: FastAPI sidecar for /v1/* endpoints.
-# fastapi==0.115.5
-# uvicorn[standard]==0.32.0
+fastapi==0.115.5
+uvicorn[standard]==0.32.0

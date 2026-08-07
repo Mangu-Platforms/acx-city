@@ -28,6 +28,7 @@ from services.voice_city.production import (
     load_voice_snapshot, prepare_directed_segments, production_manifest,
 )
 from storage import get_storage
+from pipeline.integration import pipeline_enabled, preprocess_chapter_pipeline
 from utils.audio_utils import AudioUtils
 
 log = logging.getLogger("audiobook.pipeline")
@@ -143,7 +144,14 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         job.current_chapter = i + 1
         session.commit()
 
-        clean = _text.preprocess_text(chapter["text"])
+        # Multi-agent pipeline preprocessing (when enabled)
+        pipeline_meta = {}
+        if pipeline_enabled():
+            clean, pipeline_meta = preprocess_chapter_pipeline(
+                session, job.id, i, chapter["text"], chapter["title"]
+            )
+        else:
+            clean = _text.preprocess_text(chapter["text"])
         if not clean:
             row.status = ChapterStatus.skipped
             session.commit()

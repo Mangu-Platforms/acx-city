@@ -96,6 +96,30 @@ services:
       backend:
         condition: service_started
 
+  # FastAPI sidecar for /v1/* pipeline endpoints
+  v1-api:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      ROLE: v1
+      DATABASE_URL: postgresql+psycopg://audiobook:${POSTGRES_PASSWORD:-audio…book
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: /data/storage
+    command: ["python", "-m", "uvicorn", "v1_api:app", "--host", "0.0.0.0", "--port", "5001"]
+    ports:
+      - "5001:5001"
+    volumes:
+      - audiobook-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     ports:
