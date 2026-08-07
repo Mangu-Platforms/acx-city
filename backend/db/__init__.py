@@ -26,3 +26,6 @@ __all__ = [
 
 # VOICE CITY INTEGRATION: register bounded Voice City ORM models on Base.metadata.
 from . import voice_models as _voice_models  # noqa: F401,E402
+
+# VOXENGINE PIPELINE: register multi-agent pipeline, character casting, voice cloning models.
+from . import voxengine_models as _voxengine_models  # noqa: F401,E402

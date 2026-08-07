@@ -101,6 +101,32 @@ export interface AuthResponse {
   organization?: { id: string; name: string }
 }
 
+// ── VoxEngine pipeline (served by the FastAPI sidecar under /v1) ─────────────
+
+export interface PipelineTrace {
+  chapter_number: number
+  status: string
+  current_agent: string | null
+  agent1_ms: number | null
+  agent2_ms: number | null
+  agent3_ms: number | null
+  agent4_ms: number | null
+  agent5_ms: number | null
+  qa_passed: boolean | null
+  qa_completeness_score: number | null
+  error: string | null
+}
+
+export interface PipelineStatus {
+  job_id: string
+  status: string
+  chapters_total: number
+  chapters_completed: number
+  chapters_failed: number
+  total_cost_usd: number
+  traces: PipelineTrace[]
+}
+
 // ── API calls ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -139,4 +165,7 @@ export const api = {
   usage: () => req<UsageResponse>('/api/usage'),
 
   cacheStats: () => req<CacheStats>('/api/cache/stats'),
+
+  pipelineStatus: (projectId: string) =>
+    req<PipelineStatus>(`/v1/projects/${projectId}/pipeline/status`),
 }

@@ -1,0 +1,436 @@
+"""
+Voice Clone Content Safety System
+=================================
+Provides reference audio validation, voice similarity blocking against
+protected voices, content safety checks, and DMCA watermarking for
+synthesized audio produced by ACX City.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MIN_REF_DURATION_S: float = 10.0
+MAX_REF_DURATION_S: float = 30.0
+SILENCE_RMS_THRESHOLD: float = 0.005          # below this → treat as silence
+NOISE_SPECTRAL_FLATNESS_MAX: float = 0.95     # above this → noise-only
+DEFAULT_SIMILARITY_THRESHOLD: float = 0.85
+
+# Well-known TTS voices / public-figure voice prints that must never be cloned.
+# Each entry: {"name": str, "description": str, "embedding": list[float]}
+# Embeddings are 256-dim vectors (placeholder – production would load from
+# a persistent store or model checkpoint).
+PROTECTED_VOICE_BLOCKLIST: list[dict[str, Any]] = [
+    {
+        "name": "Siri (Apple)",
+        "description": "Default Siri voice – Apple Inc. trademark",
+        "embedding": [0.0] * 256,  # placeholder; real impl loads from DB
+    },
+    {
+        "name": "Alexa (Amazon)",
+        "description": "Default Alexa voice – Amazon trademark",
+        "embedding": [0.0] * 256,
+    },
+    {
+        "name": "Google Assistant",
+        "description": "Default Google Assistant voice – Google trademark",
+        "embedding": [0.0] * 256,
+    },
+    {
+        "name": "Morgan Freeman",
+        "description": "Celebrity voice – likeness protected",
+        "embedding": [0.0] * 256,
+    },
+    {
+        "name": "David Attenborough",
+        "description": "Celebrity narrator – likeness protected",
+        "embedding": [0.0] * 256,
+    },
+    {
+        "name": "Scarlett Johansson",
+        "description": "Celebrity voice – likeness protected",
+        "embedding": [0.0] * 256,
+    },
+    {
+        "name": "Samuel L. Jackson",
+        "description": "Celebrity voice – likeness protected",
+        "embedding": [0.0] * 256,
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AudioMetrics:
+    """Lightweight container for computed audio metrics."""
+    duration_s: float = 0.0
+    rms: float = 0.0
+    spectral_flatness: float = 0.0
+    peak_amplitude: float = 0.0
+    is_silence: bool = False
+    is_noise_only: bool = False
+
+
+def _compute_audio_metrics(audio_bytes: bytes, sample_rate: int = 24000) -> AudioMetrics:
+    """Decode raw PCM bytes and compute basic signal metrics."""
+    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+    if samples.size == 0:
+        return AudioMetrics(is_silence=True)
+
+    # Normalise to [-1, 1]
+    samples = samples / 32768.0
+    duration = len(samples) / sample_rate
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    peak = float(np.max(np.abs(samples)))
+
+    # Spectral flatness (geometric mean / arithmetic mean of power spectrum)
+    spectrum = np.abs(np.fft.rfft(samples)) ** 2
+    spectrum = np.maximum(spectrum, 1e-12)
+    spectral_flatness = float(
+        np.exp(np.mean(np.log(spectrum))) / np.mean(spectrum)
+    )
+
+    return AudioMetrics(
+        duration_s=duration,
+        rms=rms,
+        spectral_flatness=spectral_flatness,
+        peak_amplitude=peak,
+        is_silence=rms < SILENCE_RMS_THRESHOLD,
+        is_noise_only=spectral_flatness > NOISE_SPECTRAL_FLATNESS_MAX,
+    )
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two 1-D vectors."""
+    dot = np.dot(a, b)
+    norm = np.linalg.norm(a) * np.linalg.norm(b)
+    if norm == 0:
+        return 0.0
+    return float(dot / norm)
+
+
+# ---------------------------------------------------------------------------
+# Watermark metadata
+# ---------------------------------------------------------------------------
+
+def generate_watermark_metadata(org_id: str, job_id: str) -> dict[str, Any]:
+    """
+    Generate DMCA watermark metadata that gets embedded into every
+    synthesised audio file.  The metadata is designed to be:
+    1. Embedded as an ID3-style JSON comment in the audio container.
+    2. Used for takedown attribution and audit-trail correlation.
+    """
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    watermark_id = uuid.uuid4().hex
+    signature = hashlib.sha256(
+        f"{org_id}:{job_id}:{watermark_id}:{timestamp}".encode()
+    ).hexdigest()
+
+    return {
+        "watermark_id": watermark_id,
+        "org_id": org_id,
+        "job_id": job_id,
+        "generated_at": timestamp,
+        "copyright_notice": (
+            f"Generated by ACX City for org={org_id}. "
+            "Unauthorised redistribution prohibited under DMCA §512."
+        ),
+        "dmca_signature": signature,
+        "acx_version": "1.0.0",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main checker
+# ---------------------------------------------------------------------------
+
+class VoiceSafetyChecker:
+    """
+    Central safety gate for the voice-clone pipeline.
+
+    Call order in production pipeline:
+      1. check_reference_audio()   – validate upload
+      2. check_voice_similarity()  – block protected voices
+      3. check_content_safety()    – scan for harmful content
+      4. generate_watermark_metadata() – stamp output
+    """
+
+    def __init__(
+        self,
+        protected_voices: list[dict[str, Any]] | None = None,
+        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    ) -> None:
+        self._protected_voices: list[dict[str, Any]] = (
+            list(protected_voices) if protected_voices is not None
+            else [dict(v) for v in PROTECTED_VOICE_BLOCKLIST]
+        )
+        self._similarity_threshold = similarity_threshold
+
+    # ------------------------------------------------------------------
+    # 1. Reference audio validation
+    # ------------------------------------------------------------------
+
+    def check_reference_audio(self, audio_bytes: bytes) -> dict[str, Any]:
+        """
+        Validate a reference audio upload.
+
+        Returns
+        -------
+        dict with keys:
+            valid       : bool – True if all checks pass
+            duration_s  : float
+            errors      : list[str] – human-readable failure reasons
+        """
+        errors: list[str] = []
+        metrics = _compute_audio_metrics(audio_bytes)
+
+        # Duration check
+        if metrics.duration_s < MIN_REF_DURATION_S:
+            errors.append(
+                f"Audio too short ({metrics.duration_s:.1f}s); "
+                f"minimum is {MIN_REF_DURATION_S}s."
+            )
+        if metrics.duration_s > MAX_REF_DURATION_S:
+            errors.append(
+                f"Audio too long ({metrics.duration_s:.1f}s); "
+                f"maximum is {MAX_REF_DURATION_S}s."
+            )
+
+        # Silence check
+        if metrics.is_silence:
+            errors.append(
+                "Audio appears to be silent or near-silent "
+                f"(RMS={metrics.rms:.4f})."
+            )
+
+        # Noise-only check
+        if metrics.is_noise_only:
+            errors.append(
+                "Audio appears to contain only noise "
+                f"(spectral_flatness={metrics.spectral_flatness:.2f})."
+            )
+
+        # Placeholder: copyrighted content marker detection
+        # In production this would call a fingerprinting service
+        # (e.g., YouTube Content ID, Audible Magic).
+        # For now we flag a warning but do not hard-block.
+        copyright_risk = self._check_copyright_markers(audio_bytes)
+        if copyright_risk:
+            errors.append(
+                "Potential copyrighted content detected. "
+                "Manual review may be required."
+            )
+
+        return {
+            "valid": len(errors) == 0,
+            "duration_s": metrics.duration_s,
+            "rms": metrics.rms,
+            "peak_amplitude": metrics.peak_amplitude,
+            "spectral_flatness": metrics.spectral_flatness,
+            "errors": errors,
+        }
+
+    def _check_copyright_markers(self, audio_bytes: bytes) -> bool:
+        """
+        Stub for copyright fingerprint check.
+
+        In production this would:
+        1. Compute an audio fingerprint (e.g., Chromaprint / AcoustID).
+        2. Query a reference database for matches.
+        3. Return True if a match exceeds a confidence threshold.
+
+        Currently returns False (no match).
+        """
+        return False
+
+    # ------------------------------------------------------------------
+    # 2. Voice similarity / blocklist check
+    # ------------------------------------------------------------------
+
+    def check_voice_similarity(
+        self,
+        embedding: np.ndarray,
+        protected_embeddings: list[np.ndarray] | None = None,
+        threshold: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Compare a voice embedding against the protected-voice blocklist.
+
+        Parameters
+        ----------
+        embedding : np.ndarray
+            Speaker embedding extracted from the reference audio.
+        protected_embeddings : list[np.ndarray], optional
+            Override blocklist embeddings.  If None, uses internal list.
+        threshold : float, optional
+            Cosine-similarity threshold above which the voice is blocked.
+
+        Returns
+        -------
+        dict with keys:
+            blocked       : bool
+            max_similarity: float
+            matched_voice : str | None – name of the closest blocked voice
+            all_scores    : list[dict] – per-voice similarity scores
+        """
+        if threshold is None:
+            threshold = self._similarity_threshold
+
+        if protected_embeddings is not None:
+            voices = [
+                {"name": f"protected_{i}", "embedding": emb.tolist() if isinstance(emb, np.ndarray) else emb}
+                for i, emb in enumerate(protected_embeddings)
+            ]
+        else:
+            voices = self._protected_voices
+
+        max_sim = 0.0
+        matched_name: str | None = None
+        all_scores: list[dict[str, Any]] = []
+
+        for voice in voices:
+            prot_emb = np.asarray(voice["embedding"], dtype=np.float32)
+            sim = _cosine_similarity(
+                embedding.astype(np.float32), prot_emb
+            )
+            all_scores.append({
+                "name": voice["name"],
+                "similarity": round(sim, 6),
+            })
+            if sim > max_sim:
+                max_sim = sim
+                matched_name = voice["name"]
+
+        blocked = max_sim >= threshold
+
+        return {
+            "blocked": blocked,
+            "max_similarity": round(max_sim, 6),
+            "matched_voice": matched_name if blocked else None,
+            "threshold": threshold,
+            "all_scores": all_scores,
+        }
+
+    # ------------------------------------------------------------------
+    # 3. Content safety
+    # ------------------------------------------------------------------
+
+    def check_content_safety(self, audio_bytes: bytes) -> dict[str, Any]:
+        """
+        Scan audio for harmful content categories.
+
+        Returns
+        -------
+        dict with keys:
+            safe    : bool – True if no violations detected
+            flags   : list[str] – category tags of detected issues
+            details : dict[str, str] – per-category notes
+        """
+        flags: list[str] = []
+        details: dict[str, str] = {}
+
+        # ---- Placeholder implementations ----
+        # In production each of these would call a dedicated model or
+        # third-party moderation API (e.g., Google Content Safety,
+        # OpenAI Moderation, Azure Content Safety).
+
+        hate_speech = self._detect_hate_speech(audio_bytes)
+        if hate_speech:
+            flags.append("hate_speech")
+            details["hate_speech"] = "Detected potentially hateful or abusive language."
+
+        explicit_content = self._detect_explicit_content(audio_bytes)
+        if explicit_content:
+            flags.append("explicit")
+            details["explicit"] = "Detected sexually explicit or graphic violent content."
+
+        pii_leak = self._detect_pii_in_audio(audio_bytes)
+        if pii_leak:
+            flags.append("pii")
+            details["pii"] = "Potential PII (phone numbers, addresses, SSNs) detected."
+
+        impersonation_attempt = self._detect_impersonation(audio_bytes)
+        if impersonation_attempt:
+            flags.append("impersonation")
+            details["impersonation"] = (
+                "Content appears to impersonate a public figure or official."
+            )
+
+        return {
+            "safe": len(flags) == 0,
+            "flags": flags,
+            "details": details,
+        }
+
+    # --- Private stub detectors (replaced in production) ---
+
+    def _detect_hate_speech(self, audio_bytes: bytes) -> bool:
+        """Stub: run speech-to-text then hate-speech classifier."""
+        return False
+
+    def _detect_explicit_content(self, audio_bytes: bytes) -> bool:
+        """Stub: explicit content classifier."""
+        return False
+
+    def _detect_pii_in_audio(self, audio_bytes: bytes) -> bool:
+        """Stub: STT + PII NER pipeline."""
+        return False
+
+    def _detect_impersonation(self, audio_bytes: bytes) -> bool:
+        """Stub: intent classifier for impersonation scenarios."""
+        return False
+
+    # ------------------------------------------------------------------
+    # 4. Protected-voice blocklist management
+    # ------------------------------------------------------------------
+
+    def get_protected_voices(self) -> list[dict[str, Any]]:
+        """Return the current protected-voice blocklist (without raw embeddings)."""
+        return [
+            {
+                "name": v["name"],
+                "description": v.get("description", ""),
+            }
+            for v in self._protected_voices
+        ]
+
+    def add_protected_voice(self, name: str, embedding: np.ndarray) -> None:
+        """
+        Add a voice to the protected blocklist.
+
+        Parameters
+        ----------
+        name : str
+            Human-readable label (e.g., "Celebrity Name").
+        embedding : np.ndarray
+            256-dim speaker embedding vector.
+        """
+        entry = {
+            "name": name,
+            "description": f"Manually added protected voice: {name}",
+            "embedding": (
+                embedding.tolist()
+                if isinstance(embedding, np.ndarray)
+                else list(embedding)
+            ),
+        }
+        # Prevent duplicates
+        if any(v["name"] == name for v in self._protected_voices):
+            raise ValueError(
+                f"Voice '{name}' already exists in the protected blocklist."
+            )
+        self._protected_voices.append(entry)

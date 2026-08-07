@@ -59,6 +59,65 @@ providers (free Microsoft Edge voices + optional AWS Polly), and a
 - Downloads: merged **MP3** and **M4B with real chapter markers** (Apple Books, BookPlayer, etc.)
 - Dockerized services (non-root, health-checked) and GitHub Actions CI
 
+## VoxEngine Multi-Agent Pipeline (Phase 5+)
+
+The core differentiator: five specialized LLM agents that prepare, normalize, tag, plan, and validate every paragraph before synthesis.
+
+````
+Raw Manuscript → Agent 1 (Structure Parser) → Agent 2 (Character Attribution)
+  → Agent 3 (Text Normalizer) → Agent 4 (Prosody Planner) → Agent 5 (QA Validator)
+  → Fully Tagged Script → GPU Synthesis
+````
+
+| Agent | Model | Cost/1M chars | Purpose |
+|-------|-------|---------------|--------|
+| 1: Structure Parser | Rule-based | $0.00 | Chapter/scene/paragraph detection |
+| 2: Character Attribution | Llama-3.2-3B | $0.05 | Speaker identification |
+| 3: Text Normalizer | gpt-4o-mini | $0.15 | Numbers, abbreviations, heteronyms |
+| 4: Prosody Planner | Phi-3.5-mini | $0.08 | Emotion tags, pauses, rate changes |
+| 5: QA Validator | gpt-4o-mini | $0.10 | Completeness, consistency, tag validity |
+
+**Emotion tag vocabulary** (superset of fish.audio S2.1):
+`[angry]` `[sad]` `[whisper]` `[soft]` `[breathy]` `[excited]` `[embarrassed]`
+`[laughing]` `[sobbing]` `[sighing]` `[pause:NNN]` `[scene_break:3000]`
+`[rate:slow]` `[rate:fast]` `[emphasis]` `[SPEAKER:Name]`
+
+### New endpoints (FastAPI /v1/* sidecar)
+
+- `POST /v1/projects/:id/pipeline/start` — kick off multi-agent preprocessing
+- `GET /v1/projects/:id/pipeline/status` — per-chapter pipeline status + costs
+- `GET /v1/projects/:id/pipeline/trace/:chapter` — full agent trace
+- `GET /v1/projects/:id/characters` — character voice assignments
+- `POST /v1/projects/:id/characters` — set character voice
+- `GET /v1/projects/:id/lexicon` — pronunciation dictionary
+- `POST /v1/projects/:id/lexicon` — add pronunciation entry
+- `GET /v1/voices` — voice catalog (paginated, filterable)
+- `GET /v1/voices/:id` — voice detail + emotion tags
+
+### MCP tools (Phase 5)
+
+Write tools (require `MCP_WRITE_ENABLED=true` on the MCP service):
+- `acx_cancel_job` — cancel a queued job immediately; running jobs stop
+  cooperatively at their next heartbeat
+- `acx_approve_job` — approve a QC-held job (`needs_review` → `succeeded`)
+- `acx_reject_job` — reject a QC-held job (`needs_review` → `failed`)
+- `acx_enqueue_synthesis` — enqueue a new synthesis job for a project
+
+Read tools (always available):
+- `acx_get_pipeline_status` — multi-agent pipeline status for a project
+
+### Run with pipeline workers
+
+```bash
+cp .env.example .env  # Set REDIS_URL, OLLAMA_ENDPOINT, OPENAI_API_KEY
+docker compose up --build
+# Pipeline workers scale with: docker compose up --scale pipeline-worker=4
+```
+
+See the [VoxEngine Production Bible](./docs/) for the full specification.
+
+---
+
 ## What changed
 
 ### Phase 2 — durable foundation
@@ -223,19 +282,33 @@ cd frontend && npm run lint && npm run build
 
 ## Roadmap
 
-Remaining items, in rough priority order:
+| Phase | Name | Status |
+|-------|------|--------|
+| 1–4 | Foundation & Infrastructure | ✅ COMPLETE |
+| 5 | Multi-Agent LLM Pipeline | ✅ Code complete (agents, Celery, FastAPI, MCP write tools) |
+| 6 | Character Attribution UI | ✅ Code complete (CharacterPanel component) |
+| 7 | GPU Synthesis + Latent Pinning | ⬜ PLANNED (Kokoro-82M, Fish Speech integration) |
+| 8 | WaveSurfer.js Studio | ✅ Code complete (MultiTrackStudio component) |
+| 9 | Voice Catalog + Emotion Engine | ⬜ PLANNED (stock_voices seeding, emotion tag synthesis) |
+| 10 | Voice Cloning | ✅ Code complete (VoiceCloneWorkbench, needs Fish Speech S2 backend) |
+| 11 | Kubernetes + KEDA | ⬜ ROADMAP |
 
-- **Retire the legacy auth path** once all deployments are on Supabase (follow-up ADR).
-- **Metrics & tracing** beyond logs (Prometheus/OpenTelemetry).
-- **Billing integration** (Stripe per MANGU) to turn the cost ledger into invoices.
-- **RLS** if/when Supabase becomes the primary database (separate ADR).
+Remaining priorities:
+- Seed stock_voices catalog with Edge + Polly voices
+- GPU synthesis worker (Kokoro-82M / Fish Speech integration)
+- Retire legacy auth path (Supabase migration)
+- Prometheus + Grafana + OpenTelemetry observability
+- Stripe billing integration
+- Kubernetes + KEDA auto-scaling
+- RLS if/when Supabase becomes the primary database (separate ADR)
 - **MCP network (MCN)**: `backend/mcp_server.py` is the first node — a
   streamable-HTTP MCP server (gated by `MCP_ENABLED` + `MCP_API_KEY`, see
   `backend/railway.mcp.toml`) exposing read tools (`acx_health`,
-  `acx_list_jobs`, `acx_get_job`, `acx_list_organizations`, `acx_usage`) and,
-  behind the additional `MCP_WRITE_ENABLED=true` gate, write tools
-  (`acx_cancel_job`, `acx_approve_job`, `acx_reject_job`) that reuse the REST
-  API's queue semantics. Next: sibling repos joining the network.
+  `acx_list_jobs`, `acx_get_job`, `acx_list_organizations`, `acx_usage`,
+  `acx_get_pipeline_status`) and, behind the additional
+  `MCP_WRITE_ENABLED=true` gate, write tools (`acx_cancel_job`,
+  `acx_approve_job`, `acx_reject_job`, `acx_enqueue_synthesis`) that reuse
+  the REST API's queue semantics. Next: sibling repos joining the network.
 
 See the Revamp Blueprint for the full target architecture and delivery roadmap.
 

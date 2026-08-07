@@ -1,0 +1,105 @@
+---
+# ACX City - KEDA ScaledObjects
+# Event-driven autoscaling for gpu-synthesis-worker and pipeline-worker
+
+# ── KEDA ScaledObject: GPU Synthesis Worker ──────────────────────────────────
+# Scales based on PostgreSQL query: number of queued jobs
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: gpu-synthesis-worker-scaledobject
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: gpu-synthesis-worker
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: worker
+  annotations:
+    app.kubernetes.io/description: "Scale GPU synthesis workers based on queued jobs in PostgreSQL"
+spec:
+  scaleTargetRef:
+    name: gpu-synthesis-worker
+  pollingInterval: 30
+  cooldownPeriod: 300
+  idleReplicaCount: 0
+  minReplicaCount: 0
+  maxReplicaCount: 50
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  triggers:
+    - type: postgresql
+      metadata:
+        host: "acx-city-postgres.acx-city.svc.cluster.local"
+        port: "5432"
+        dbName: "acx_city"
+        username: "acx"
+        passwordFromEnv: "DATABASE_PASSWORD"  # must be set in a TriggerAuthentication or env
+        targetQueryValue: "3"
+        query: "SELECT COUNT(*) FROM jobs WHERE status='queued'"
+        sslmode: "disable"
+
+---
+# ── KEDA TriggerAuthentication for PostgreSQL (synthesis worker) ──────────────
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: postgres-auth
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: acx-city-secret
+      key: DATABASE_PASSWORD
+
+---
+# ── KEDA ScaledObject: Pipeline Worker (Celery) ─────────────────────────────
+# Scales based on Redis list length of Celery queue
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pipeline-worker-scaledobject
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: pipeline-worker
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: celery-worker
+  annotations:
+    app.kubernetes.io/description: "Scale Celery pipeline workers based on Redis queue length"
+spec:
+  scaleTargetRef:
+    name: pipeline-worker
+  pollingInterval: 15
+  cooldownPeriod: 300
+  idleReplicaCount: 0
+  minReplicaCount: 0
+  maxReplicaCount: 20
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  triggers:
+    - type: redis
+      metadata:
+        address: "acx-city-redis.acx-city.svc.cluster.local:6379"
+        listName: "celery"
+        listLength: "3"
+        databaseIndex: "1"
+        activationListLength: "1"
+      authenticationRef:
+        name: keda-redis-auth
+
+---
+# ── KEDA TriggerAuthentication for Redis (pipeline worker) ───────────────────
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-redis-auth
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: acx-city-secret
+      key: REDIS_PASSWORD
