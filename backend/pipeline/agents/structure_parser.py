@@ -19,6 +19,7 @@ from .base import BaseAgent, AgentResult
 CHAPTER_PATTERNS = [
     re.compile(r"^(?:chapter|part|prologue|epilogue|book)\s*[\d\wIVXLC]+", re.IGNORECASE),
     re.compile(r"^(?:CHAPTER|PART|PROLOGUE|EPILOGUE|BOOK)\s*[\dIVXLC]+"),
+    re.compile(r"^(?:prologue|epilogue)$", re.IGNORECASE),
     re.compile(r"^\d+\.\s+\S"),  # "1. Title"
     re.compile(r"^[IVXLC]+\.\s+\S"),  # "IV. Title"
 ]
@@ -65,9 +66,9 @@ def _detect_speaker_attribution(line: str) -> str | None:
     stripped = line.strip()
     # After closing quote + punctuation: "said X" or "X said"
     attr_patterns = [
-        re.compile(r'["\u201c\u201d][,.!?]\s+(?:said|asked|replied|whispered|shouted|exclaimed|muttered|answered|called|cried|began|continued|added|insisted|demanded|suggested|offered|admitted|agreed|argued|claimed|complained|explained|groaned|hissed|laughed|moaned|mumbled|murmured|nagged|objected|pleaded|promised|protested|repeated|responded|retorted|roared|screamed|sighed|snapped|snarled|sobbed|stammered|urged|warned|wept|whimpered|yelled)\s+(\w+)'),
-        re.compile(r'["\u201c\u201d][,.!?]\s+(\w+)\s+(?:said|asked|replied|whispered|shouted)'),
-        re.compile(r'["\u201c\u201d][,.!?]\s+(\w+)\s+(?:nodded|shook|smiled|laughed|frowned|sighed|grimaced|stared|glared|grinned)'),
+        re.compile(r'[,.!?]["\u201c\u201d]\s+(?:said|asked|replied|whispered|shouted|exclaimed|muttered|answered|called|cried|began|continued|added|insisted|demanded|suggested|offered|admitted|agreed|argued|claimed|complained|explained|groaned|hissed|laughed|moaned|mumbled|murmured|nagged|objected|pleaded|promised|protested|repeated|responded|retorted|roared|screamed|sighed|snapped|snarled|sobbed|stammered|urged|warned|wept|whimpered|yelled)\s+(\w+)'),
+        re.compile(r'[,.!?]["\u201c\u201d]\s+(\w+)\s+(?:said|asked|replied|whispered|shouted)'),
+        re.compile(r'[,.!?]["\u201c\u201d]\s+(\w+)\s+(?:nodded|shook|smiled|laughed|frowned|sighed|grimaced|stared|glared|grinned)'),
     ]
     for p in attr_patterns:
         m = p.search(stripped)

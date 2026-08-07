@@ -90,7 +90,7 @@ def _check_unclosed_tags(text: str) -> list[dict[str, Any]]:
     """Check for unclosed or malformed tags."""
     issues = []
     # Check for tags that look like they should be closed but aren't
-    open_tags = re.findall(r"\[(\w+)\]", text)
+    open_tags = re.findall(r"\[(\w+)(?::[^\]]*)?\]", text)
     close_tags = re.findall(r"\[/(\w+)\]", text)
 
     # pron tags are the only ones that need closing
