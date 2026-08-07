@@ -1,0 +1,451 @@
+---
+# ACX City - Kubernetes Base Manifests
+# Namespace, Deployments, Services, ConfigMap, Secret, Ingress, HPA
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+
+---
+# ── ConfigMap ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acx-city-config
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+data:
+  DATABASE_URL: "postgresql+psycopg2://acx:changeme@acx-city-postgres:5432/acx_city"
+  REDIS_URL: "redis://acx-city-redis:6379/0"
+  QC_POLICY: "strict"
+  CELERY_BROKER_URL: "redis://acx-city-redis:6379/1"
+  CELERY_RESULT_BACKEND: "redis://acx-city-redis:6379/2"
+  LOG_LEVEL: "info"
+  WORKER_CONCURRENCY: "4"
+  SYNTHESIS_TIMEOUT: "300"
+  PIPELINE_TIMEOUT: "600"
+  CORS_ORIGINS: "*"
+
+---
+# ── Secret (template – replace values before deploy) ─────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: acx-city-secret
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+type: Opaque
+stringData:
+  JWT_SECRET: "CHANGE_ME_BEFORE_DEPLOY"
+  ENCRYPTION_KEY: "CHANGE_ME_BEFORE_DEPLOY"
+  S3_ACCESS_KEY: "CHANGE_ME_BEFORE_DEPLOY"
+  S3_SECRET_KEY: "CHANGE_ME_BEFORE_DEPLOY"
+
+---
+# ── Backend Deployment (Flask API) ───────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    app.kubernetes.io/description: "ACX City Flask API backend"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: acx-city
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: backend
+          image: acx-city/backend:latest
+          ports:
+            - containerPort: 5000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: acx-city-config
+            - secretRef:
+                name: acx-city-secret
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+# ── Backend Service ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: acx-city
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+
+---
+# ── Backend HPA ──────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: acx-city
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ── Worker Deployment (Synthesis) ────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-synthesis-worker
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: gpu-synthesis-worker
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: worker
+  annotations:
+    app.kubernetes.io/description: "ACX City GPU synthesis worker"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-synthesis-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gpu-synthesis-worker
+        app.kubernetes.io/part-of: acx-city
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: acx-city/synthesis-worker:latest
+          envFrom:
+            - configMapRef:
+                name: acx-city-config
+            - secretRef:
+                name: acx-city-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+# ── Worker Service ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-synthesis-worker
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: gpu-synthesis-worker
+    app.kubernetes.io/part-of: acx-city
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gpu-synthesis-worker
+  ports:
+    - port: 80
+      targetPort: 5000
+      protocol: TCP
+      name: http
+
+---
+# ── Pipeline Worker Deployment (Celery) ──────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-worker
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: pipeline-worker
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: celery-worker
+  annotations:
+    app.kubernetes.io/description: "ACX City Celery pipeline worker"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pipeline-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pipeline-worker
+        app.kubernetes.io/part-of: acx-city
+        app.kubernetes.io/component: celery-worker
+    spec:
+      containers:
+        - name: pipeline-worker
+          image: acx-city/pipeline-worker:latest
+          command: ["celery", "-A", "pipeline_app", "worker", "--loglevel=info"]
+          envFrom:
+            - configMapRef:
+                name: acx-city-config
+            - secretRef:
+                name: acx-city-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+# ── Pipeline Worker Service ──────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-worker
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: pipeline-worker
+    app.kubernetes.io/part-of: acx-city
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pipeline-worker
+  ports:
+    - port: 80
+      targetPort: 5000
+      protocol: TCP
+      name: http
+
+---
+# ── V1 API Deployment (FastAPI) ──────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: v1-api
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: v1-api
+    app.kubernetes.io/part-of: acx-city
+    app.kubernetes.io/component: api
+  annotations:
+    app.kubernetes.io/description: "ACX City FastAPI v1 API"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: v1-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: v1-api
+        app.kubernetes.io/part-of: acx-city
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: v1-api
+          image: acx-city/v1-api:latest
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: acx-city-config
+            - secretRef:
+                name: acx-city-secret
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+# ── V1 API Service ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: v1-api
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: v1-api
+    app.kubernetes.io/part-of: acx-city
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: v1-api
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+
+---
+# ── V1 API HPA ───────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: v1-api-hpa
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/name: v1-api
+    app.kubernetes.io/part-of: acx-city
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: v1-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ── Ingress ──────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: acx-city-ingress
+  namespace: acx-city
+  labels:
+    app.kubernetes.io/part-of: acx-city
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: acx-city.example.com
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 80
+          - path: /v1(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: v1-api
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
