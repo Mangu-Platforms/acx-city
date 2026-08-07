@@ -24,8 +24,9 @@ from typing import Optional
 from sqlalchemy import func, select, text
 
 from billing.usage import month_usage, quota_for
-from db.models import Job, JobStatus, Organization
+from db.models import Job, JobStatus, Organization, Project
 from db.session import session_scope
+from sqlalchemy import select
 from observability.logging_setup import configure_logging
 from services.providers.registry import ProviderRegistry
 
@@ -216,6 +217,153 @@ def _require_auth_middleware(app):
         await app(scope, receive, send)
 
     return middleware
+
+
+# --------------------------------------------------------------------------- #
+# Write tools (Phase 5+)
+# --------------------------------------------------------------------------- #
+
+@mcp.tool(annotations={"readOnlyHint": False})
+def acx_cancel_job(job_id: str) -> dict:
+    """Cancel a running or queued synthesis job.
+
+    Args:
+        job_id: the job UUID to cancel.
+    """
+    if not _valid_uuid(job_id):
+        return {"error": f"'{job_id}' is not a valid job UUID."}
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            return {"error": f"Job '{job_id}' not found."}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.canceled):
+            return {"error": f"Job is already {job.status.value}. Cannot cancel."}
+        job.status = JobStatus.canceled
+        job.cancel_requested = True
+        s.flush()
+        return {"job_id": job.id, "status": "canceled", "message": "Job cancellation requested."}
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+def acx_approve_job(job_id: str) -> dict:
+    """Approve a job held in needs_review (QC gate).
+
+    Args:
+        job_id: the job UUID to approve.
+    """
+    if not _valid_uuid(job_id):
+        return {"error": f"'{job_id}' is not a valid job UUID."}
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        if job is None:
+            return {"error": f"Job '{job_id}' not found."}
+        if job.status != JobStatus.needs_review:
+            return {"error": f"Job status is '{job.status.value}', not 'needs_review'."}
+        job.status = JobStatus.succeeded
+        s.flush()
+        return {"job_id": job.id, "status": "succeeded", "message": "Job approved."}
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+def acx_enqueue_synthesis(
+    project_id: str,
+    provider: str = "edge",
+    voice_id: str = "en-US-AriaNeural",
+    formats: str = "mp3,m4b",
+) -> dict:
+    """Enqueue a new synthesis job for a project.
+
+    Args:
+        project_id: the project UUID.
+        provider: TTS provider (edge, polly, kokoro, fish_speech).
+        voice_id: voice identifier for the provider.
+        formats: comma-separated output formats (mp3, m4b, wav).
+    """
+    if not _valid_uuid(project_id):
+        return {"error": f"'{project_id}' is not a valid project UUID."}
+    with session_scope() as s:
+        project = s.get(Project, project_id)
+        if project is None:
+            return {"error": f"Project '{project_id}' not found."}
+        if not project.source_text or not project.source_text.strip():
+            return {"error": "Project has no source text to synthesize."}
+
+        job = Job(
+            organization_id=project.organization_id,
+            project_id=project.id,
+            provider=provider,
+            voice_id=voice_id,
+            formats=formats,
+            status=JobStatus.queued,
+        )
+        s.add(job)
+        s.flush()
+        return {
+            "job_id": job.id,
+            "status": "queued",
+            "provider": provider,
+            "voice_id": voice_id,
+            "message": "Synthesis job enqueued.",
+        }
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def acx_get_pipeline_status(project_id: str) -> dict:
+    """Get multi-agent pipeline status for a project.
+
+    Args:
+        project_id: the project UUID.
+    """
+    if not _valid_uuid(project_id):
+        return {"error": f"'{project_id}' is not a valid project UUID."}
+
+    from db.voxengine_models import PipelineTrace
+
+    with session_scope() as s:
+        project = s.get(Project, project_id)
+        if project is None:
+            return {"error": f"Project '{project_id}' not found."}
+
+        job = s.execute(
+            select(Job)
+            .where(Job.project_id == project_id)
+            .order_by(Job.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not job:
+            return {"error": "No job found for this project."}
+
+        traces = s.execute(
+            select(PipelineTrace)
+            .where(PipelineTrace.job_id == job.id)
+            .order_by(PipelineTrace.chapter_number)
+        ).scalars().all()
+
+        completed = sum(1 for t in traces if t.status == "completed")
+        failed = sum(1 for t in traces if t.status == "failed")
+        total_cost = sum(
+            float(t.agent2_cost_usd or 0) + float(t.agent3_cost_usd or 0) +
+            float(t.agent4_cost_usd or 0) + float(t.agent5_cost_usd or 0)
+            for t in traces
+        )
+
+        return {
+            "job_id": job.id,
+            "project_id": project_id,
+            "chapters_total": len(traces),
+            "chapters_completed": completed,
+            "chapters_failed": failed,
+            "total_cost_usd": round(total_cost, 6),
+            "traces": [
+                {
+                    "chapter": t.chapter_number,
+                    "status": t.status,
+                    "qa_passed": t.qa_passed,
+                }
+                for t in traces
+            ],
+        }
 
 
 def main() -> None:

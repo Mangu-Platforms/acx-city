@@ -19,6 +19,15 @@ pytest==8.3.2
 mcp==1.28.1
 ebooklib==0.18
 pillow==10.2.0
+# --- VoxEngine Pipeline (Phase 5+) ---
+celery[redis]==5.4.0
+redis==5.2.1
+httpx==0.27.2
+openai==1.51.0
+pyloudnorm==0.1.1
 # Optional: error monitoring (enabled only when SENTRY_DSN is set).
 # Uncomment to install; the app imports it lazily so it is not required.
 # sentry-sdk==2.14.0
+# Optional: FastAPI sidecar for /v1/* endpoints.
+# fastapi==0.115.5
+# uvicorn[standard]==0.32.0
