@@ -11,7 +11,7 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 SCHEMA_VERSION = "1.0"

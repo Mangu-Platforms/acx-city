@@ -38,9 +38,7 @@ from .generator import (
 )
 from .parameter_schema import (
     CONTROL_BY_PATH,
-    ParameterValidationError,
     artifact_fingerprint,
-    canonical_fingerprint,
     merge_parameter_patch,
     normalize_parameters,
     schema_document,

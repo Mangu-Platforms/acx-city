@@ -81,5 +81,5 @@ class FileManager:
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-        except Exception as e:
+        except Exception:
             log.exception("error cleaning up file %s", file_path)

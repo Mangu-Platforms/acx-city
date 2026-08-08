@@ -69,9 +69,12 @@ class PollyProvider(SpeechProvider):
     ) -> bytes:
         escaped = html.escape(text, quote=False)
         prosody = []
-        if rate: prosody.append(f'rate="{rate}"')
-        if pitch: prosody.append(f'pitch="{pitch}"')
-        if volume: prosody.append(f'volume="{volume}"')
+        if rate:
+            prosody.append(f'rate="{rate}"')
+        if pitch:
+            prosody.append(f'pitch="{pitch}"')
+        if volume:
+            prosody.append(f'volume="{volume}"')
         rendered = f"<speak><prosody {' '.join(prosody)}>{escaped}</prosody></speak>" if prosody else f"<speak>{escaped}</speak>"
         response = self._get_client().synthesize_speech(
             Text=rendered, VoiceId=voice_id, Engine=engine, OutputFormat="mp3", TextType="ssml",

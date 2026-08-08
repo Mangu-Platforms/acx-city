@@ -10,8 +10,6 @@ from flask import Blueprint, g, jsonify, request
 
 from auth import current_identity, require_auth
 from db.voice_models import (
-    VoiceCityCandidate,
-    VoiceCityCandidateSet,
     VoiceCityPreview,
 )
 from services.voice_city.audition_scripts import AUDITION_SCRIPTS, get_audition_script
