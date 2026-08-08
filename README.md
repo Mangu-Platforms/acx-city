@@ -272,3 +272,11 @@ Remaining priorities:
 
 - Synthesized chunks are cached (content-addressed by provider+voice+text hash).
 - Final outputs land under the configured `OUTPUT_FOLDER` per task id (per-chapter MP3s plus merged MP3/M4B).
+
+## Remediation Program
+
+Starting August 2026, ACX City is undergoing a structured remediation program to achieve reliable, crash-safe, end-to-end audiobook production. See [`docs/CAPABILITY_MATRIX.md`](docs/CAPABILITY_MATRIX.md) for per-feature status and phase progress.
+
+## Autonomous Workflow
+
+The daily multi-agent workflow (`.github/disabled/main.yml.disabled`) has been disabled. It generated unreviewable churn against a non-building codebase. It may be reconsidered after P1.8 (dashboard rebuild + worker heartbeat) if measurement justifies it.
