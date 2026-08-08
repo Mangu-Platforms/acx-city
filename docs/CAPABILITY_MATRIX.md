@@ -27,12 +27,12 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Character voice assignment | Yes | `/api` | Yes | Yes | n/a | **No** | **No** | `api/voxengine.py:72-123`; `CharacterVoiceMap` in Postgres |
 | Pronunciation lexicon | Yes | `/api` | Yes | Yes | n/a | **No** | **No** | `api/voxengine.py:127-241` |
 | Multi-agent pipeline | Partial | `/api` | Flag-gated | Partial | No | **No** | **No** | `PIPELINE_ENABLED` default `false`; `api/voxengine.py:244-299` |
-| Voice preview | Yes | **Broken** | **No** | No | No | **No** | **No** | Field mismatch: API returns `sample_audio_url`, frontend expects `sample_url`; `/api/voices/<id>/sample` route missing |
-| Chapter streaming | Partial | **Broken** | **No** | No | No | **No** | **No** | `JobStatus.completed` does not exist; `ProviderRegistry` has no `first_available` |
+| Voice preview | Yes | `/api` | Yes | No | n/a | **No** | **No** | `api/voxengine.py:get_voice_sample`; redirects to `sample_audio_url` if set, else on-demand synthesis; no E2E test |
+| Chapter streaming | Partial | Yes | Yes | Yes | n/a | **No** | **No** | `services/streaming.py`; uses `audio_key` → signed URL redirect; preview uses `registry.default()`; no E2E test |
 | Waveform | Partial | Stub | Yes | No | n/a | **No** | **No** | `api/voxengine.py:420-437` returns 200 + `duration_s` + `peaks:[]`; peaks pre-computation deferred to P1.6 |
 | Single-chapter rerender | Partial | 503 | **No** | No | No | **No** | **No** | `api/voxengine.py:403-417` returns 503 with explanation; Celery worker required (P1.5) |
 | Voice cloning | Yes | **501** | **No** | No | No | **No** | **No** | `api/voxengine.py:367-371` raises `501`; implementation deferred to P2.1 |
-| EPUB export (from job) | Partial | **Broken** | **No** | No | No | **No** | **No** | Wrong ORM attrs; no `text_content` column |
+| EPUB export (from job) | Partial | Yes | Yes | Yes | n/a | **No** | **No** | `app.py:export_job_as_epub`; chapter text re-split from `project.source_text`; no E2E test |
 | EPUB export (client-supplied) | Partial | Partial | Yes | Yes | n/a | Yes | **Yes** | `app.py:618`; 5 tests passing |
 
 ## Phase tracker
