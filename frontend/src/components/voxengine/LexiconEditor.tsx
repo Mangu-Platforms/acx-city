@@ -26,7 +26,7 @@ export function LexiconEditor({ projectId }: LexiconEditorProps) {
 
   const fetchEntries = useCallback(async () => {
     try {
-      const resp = await api.get(`/v1/projects/${projectId}/lexicon`)
+      const resp = await api.get(`/api/projects/${projectId}/lexicon`)
       setEntries(resp.data)
     } catch (err) {
       console.error('Failed to load lexicon:', err)
@@ -40,7 +40,7 @@ export function LexiconEditor({ projectId }: LexiconEditorProps) {
   const handleAdd = async () => {
     if (!newEntry.word.trim()) return
     try {
-      await api.post(`/v1/projects/${projectId}/lexicon`, newEntry)
+      await api.post(`/api/projects/${projectId}/lexicon`, newEntry)
       setNewEntry({ word: '', ipa_phoneme: '', phonetic_spelling: '', context_note: '' })
       setShowAdd(false)
       fetchEntries()
@@ -52,7 +52,7 @@ export function LexiconEditor({ projectId }: LexiconEditorProps) {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this pronunciation entry?')) return
     try {
-      await api.delete(`/v1/projects/${projectId}/lexicon/${id}`)
+      await api.delete(`/api/projects/${projectId}/lexicon/${id}`)
       fetchEntries()
     } catch (err) {
       console.error('Failed to delete entry:', err)

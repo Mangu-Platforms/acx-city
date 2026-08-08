@@ -251,7 +251,7 @@ export const VoiceCatalog: React.FC<VoiceCatalogProps> = ({ onSelect, selectedVo
         if (filters.provider) params.set('provider', filters.provider);
         if (filters.search) params.set('q', filters.search);
 
-        const res = await api.get(`/v1/voices?${params.toString()}`);
+        const res = await api.get(`/api/voices?${params.toString()}`);
         if (!cancelled) setVoices(res.data ?? []);
       } catch (err: any) {
         if (!cancelled) setError(err?.message ?? 'Failed to load voices');
@@ -301,7 +301,7 @@ export const VoiceCatalog: React.FC<VoiceCatalogProps> = ({ onSelect, selectedVo
       audioRef.current = null;
     }
 
-    const url = voice.sample_url ?? `/v1/voices/${voice.id}/sample`;
+    const url = voice.sample_url ?? `/api/voices/${voice.id}/sample`;
     const audio = new Audio(url);
     audioRef.current = audio;
 

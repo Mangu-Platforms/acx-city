@@ -53,7 +53,7 @@ export function MultiTrackStudio({ projectId, jobId }: MultiTrackStudioProps) {
       setChapters(resp.data.chapters || [])
       // Also fetch pipeline traces
       try {
-        const traceResp = await api.get(`/v1/projects/${projectId}/pipeline/status`)
+        const traceResp = await api.get(`/api/projects/${projectId}/pipeline/status`)
         setTraces(traceResp.data.traces || [])
       } catch {}
     } catch (err) {
@@ -98,7 +98,7 @@ export function MultiTrackStudio({ projectId, jobId }: MultiTrackStudioProps) {
 
   const handleRerender = async (chapterIndex: number) => {
     try {
-      await api.post(`/v1/chapters/${chapters[chapterIndex]?.index}/rerender`, {})
+      await api.post(`/api/chapters/${chapters[chapterIndex]?.index}/rerender`, {})
       fetchChapters()
     } catch (err) {
       console.error('Failed to re-render:', err)

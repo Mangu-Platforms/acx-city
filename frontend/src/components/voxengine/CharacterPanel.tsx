@@ -40,7 +40,7 @@ export function CharacterPanel({ projectId }: CharacterPanelProps) {
 
   const fetchCharacters = useCallback(async () => {
     try {
-      const resp = await api.get(`/v1/projects/${projectId}/characters`)
+      const resp = await api.get(`/api/projects/${projectId}/characters`)
       setCharacters(resp.data)
     } catch (err) {
       console.error('Failed to load characters:', err)
@@ -54,7 +54,7 @@ export function CharacterPanel({ projectId }: CharacterPanelProps) {
   const handleAdd = async () => {
     if (!newChar.character_name.trim()) return
     try {
-      await api.post(`/v1/projects/${projectId}/characters`, newChar)
+      await api.post(`/api/projects/${projectId}/characters`, newChar)
       setNewChar({ character_name: '', voice_slug: 'en-US-AriaNeural', base_emotion: 'neutral', pitch_adjustment: 1.0, speed_adjustment: 1.0, is_narrator: false })
       setShowAdd(false)
       fetchCharacters()
@@ -65,7 +65,7 @@ export function CharacterPanel({ projectId }: CharacterPanelProps) {
 
   const handleUpdate = async (char: CharacterVoice, updates: Partial<CharacterVoice>) => {
     try {
-      await api.post(`/v1/projects/${projectId}/characters`, { ...char, ...updates })
+      await api.post(`/api/projects/${projectId}/characters`, { ...char, ...updates })
       fetchCharacters()
     } catch (err) {
       console.error('Failed to update character:', err)
