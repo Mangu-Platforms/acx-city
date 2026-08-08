@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from db.base import utcnow
-from db.models import Job, JobAttempt, JobStatus
+from db.models import Job, JobAttempt, JobStatus, WorkerHeartbeat
 
 log = logging.getLogger("audiobook.queue")
 
@@ -87,22 +87,55 @@ def claim_next_job(session: Session, worker_id: str) -> Optional[Job]:
     return job
 
 
+class LeaseLost(Exception):
+    """Raised when the worker's lease on a job has been revoked or stolen."""
+
+
 def heartbeat(session: Session, job: Job, worker_id: str) -> bool:
     """Refresh the lock timestamp so the orphan sweeper leaves this job alone.
 
-    Returns False if the job was canceled or stolen (worker should stop).
+    Raises LeaseLost when the lock has been stolen (another worker claimed it
+    or the job was reset by the orphan sweeper).
+    Returns False if the job was canceled (worker should stop cooperatively).
     """
     session.refresh(job)
-    if job.cancel_requested:
-        return False
     if job.locked_by != worker_id or job.status != JobStatus.running:
+        raise LeaseLost(f"job {job.id} lock lost (locked_by={job.locked_by!r}, status={job.status})")
+    if job.cancel_requested:
         return False
     job.locked_at = utcnow()
     session.flush()
     return True
 
 
+def heartbeat_worker(session: Session, worker_id: str, job_id: str | None = None) -> None:
+    """Upsert the worker's heartbeat row so the sweeper knows it's still alive."""
+    now = utcnow()
+    existing = session.get(WorkerHeartbeat, worker_id)
+    if existing is None:
+        session.add(WorkerHeartbeat(worker_id=worker_id, last_seen=now, current_job_id=job_id))
+    else:
+        existing.last_seen = now
+        existing.current_job_id = job_id
+    session.flush()
+
+
+def _assert_still_owner(session: Session, job: Job, worker_id: str) -> None:
+    """Raise LeaseLost if this worker no longer holds the job lock.
+
+    Call before any terminal write so a zombie worker cannot overwrite a job
+    that has already been recovered and restarted by another worker.
+    """
+    session.refresh(job)
+    if job.locked_by != worker_id or job.status != JobStatus.running:
+        raise LeaseLost(
+            f"cannot commit terminal state for job {job.id}: "
+            f"locked_by={job.locked_by!r}, status={job.status}"
+        )
+
+
 def complete_job(session: Session, job: Job, worker_id: str) -> None:
+    _assert_still_owner(session, job, worker_id)
     job.status = JobStatus.succeeded
     job.progress = 100
     job.locked_by = None
@@ -114,6 +147,7 @@ def complete_job(session: Session, job: Job, worker_id: str) -> None:
 
 def hold_for_review(session: Session, job: Job, worker_id: str) -> None:
     """QC gate held the job: audio exists but failed QC. Terminal-but-recoverable."""
+    _assert_still_owner(session, job, worker_id)
     job.status = JobStatus.needs_review
     job.progress = 100
     job.locked_by = None
@@ -144,6 +178,14 @@ def reject_reviewed_job(session: Session, job: Job, reason: str = "") -> None:
 
 def fail_job(session: Session, job: Job, worker_id: str, error: str) -> None:
     """Record a failure. Retries with backoff until max_attempts, then fails."""
+    # Re-check ownership on failure path too — don't overwrite a recovered job.
+    session.refresh(job)
+    if job.locked_by != worker_id:
+        log.warning(
+            "fail_job: job %s no longer owned by %s (locked_by=%s); skipping write",
+            job.id, worker_id, job.locked_by,
+        )
+        return
     job.error = error
     job.locked_by = None
     job.locked_at = None
@@ -223,6 +265,14 @@ def recover_orphans(session: Session, lease_seconds: int = DEFAULT_LEASE_SECONDS
         session.flush()
         log.warning("recovered %d orphaned job(s)", count)
     return count
+
+
+def deregister_worker(session: Session, worker_id: str) -> None:
+    """Remove the worker's heartbeat row on clean shutdown."""
+    row = session.get(WorkerHeartbeat, worker_id)
+    if row is not None:
+        session.delete(row)
+        session.flush()
 
 
 def _close_attempt(session: Session, job: Job, worker_id: str, outcome: str, error: Optional[str] = None) -> None:

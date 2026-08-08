@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from billing import record_usage
 from db.base import utcnow
 from db.models import ChapterResult, ChapterStatus, Job
+from jobs.queue import LeaseLost  # re-export so callers import from one place
 from services.providers import ProviderRegistry
 from services.synthesis_cache import SynthesisCache
 from services.text_processor import TextProcessor

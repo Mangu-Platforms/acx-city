@@ -23,7 +23,7 @@ import uuid
 
 from db import init_engine, session_scope
 from jobs import queue as q
-from jobs.pipeline import JobCanceled, run_job
+from jobs.pipeline import JobCanceled, LeaseLost, run_job
 from observability import configure_logging, init_sentry, request_id_var
 from services.voice_city import voice_optimizer as voice_optimizer
 
@@ -66,35 +66,46 @@ def process_one(worker_id: str) -> bool:
     request_id_var.set(job_id)
 
     # Run the pipeline in a session; commit progress incrementally inside run_job.
-    with session_scope() as session:
-        from db.models import Job  # local import to avoid cycles at module load
+    try:
+        with session_scope() as session:
+            from db.models import Job  # local import to avoid cycles at module load
 
-        job = session.get(Job, job_id)
+            job = session.get(Job, job_id)
+            q.heartbeat_worker(session, worker_id, job_id)
+            session.commit()
 
-        def should_continue() -> bool:
-            # Refresh lock/cancel state on its own connection.
-            return q.heartbeat(session, job, worker_id)
+            def should_continue() -> bool:
+                # Raises LeaseLost if lock was stolen; returns False on cancel.
+                return q.heartbeat(session, job, worker_id)
 
-        try:
-            gate_passed = run_job(session, job, should_continue)
-            if gate_passed:
-                q.complete_job(session, job, worker_id)
-            else:
-                q.hold_for_review(session, job, worker_id)
-        except JobCanceled:
-            from db.models import JobStatus
-            job.status = JobStatus.canceled
-            job.locked_by = None
-            job.locked_at = None
-            q._close_attempt(session, job, worker_id, outcome="canceled")
-            log.info("job %s canceled", job_id)
-        except Exception as e:  # noqa: BLE001
-            session.rollback()
-            # Re-open a clean transaction to record the failure.
-            with session_scope() as s2:
-                j2 = s2.get(Job, job_id)
-                q.fail_job(s2, j2, worker_id, str(e))
-            log.exception("job %s failed", job_id)
+            try:
+                gate_passed = run_job(session, job, should_continue)
+                if gate_passed:
+                    q.complete_job(session, job, worker_id)
+                else:
+                    q.hold_for_review(session, job, worker_id)
+            except LeaseLost as e:
+                # Lock was stolen or expired — another worker took over. Don't touch
+                # the job row; it belongs to the other worker now.
+                log.warning("job %s: lease lost, stopping: %s", job_id, e)
+            except JobCanceled:
+                from db.models import JobStatus
+                job.status = JobStatus.canceled
+                job.locked_by = None
+                job.locked_at = None
+                q._close_attempt(session, job, worker_id, outcome="canceled")
+                log.info("job %s canceled", job_id)
+            except Exception as e:  # noqa: BLE001
+                session.rollback()
+                # Re-open a clean transaction to record the failure.
+                with session_scope() as s2:
+                    j2 = s2.get(Job, job_id)
+                    q.fail_job(s2, j2, worker_id, str(e))
+                log.exception("job %s failed", job_id)
+    finally:
+        # Clear the heartbeat row's current_job_id after the job session closes.
+        with session_scope() as s3:
+            q.heartbeat_worker(s3, worker_id, job_id=None)
     return True
 
 
@@ -135,10 +146,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     log.info("worker %s starting", worker_id)
 
-    # Startup orphan recovery (restart safety).
+    # Startup orphan recovery (restart safety) + register heartbeat row.
     with session_scope() as session:
         q.recover_orphans(session)
         voice_optimizer.recover_orphans(session)
+        q.heartbeat_worker(session, worker_id)
 
     last_sweep = time.monotonic()
     last_retention = time.monotonic()
@@ -170,6 +182,8 @@ def main() -> None:
         if not did_work:
             time.sleep(POLL_INTERVAL)
 
+    with session_scope() as session:
+        q.deregister_worker(session, worker_id)
     log.info("worker %s stopped", worker_id)
 
 

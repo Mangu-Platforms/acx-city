@@ -286,3 +286,17 @@ class RateBucket(Base):
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     window_start: Mapped[int] = mapped_column(Integer, primary_key=True)  # epoch seconds
     count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class WorkerHeartbeat(Base):
+    """One row per live worker process. Workers upsert their row every heartbeat.
+
+    The orphan sweeper uses this table — together with Job.locked_at — to detect
+    dead workers faster than a fixed lease timeout allows. When a worker's
+    last_seen is stale its held job is requeued.
+    """
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    current_job_id: Mapped[Optional[str]] = mapped_column(GUID, ForeignKey("jobs.id", ondelete="SET NULL"))
