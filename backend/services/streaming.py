@@ -21,9 +21,10 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 from sqlalchemy import select
 
 from auth import current_identity, require_auth
-from db import get_session
 from db.models import ChapterResult, ChapterStatus, Job, JobStatus
+from db.session import session_scope
 from services.providers import ProviderRegistry
+from storage import get_storage
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class AudioStreamer:
     """Generators that yield MP3 audio chunks for HTTP streaming."""
 
     def __init__(self, registry: Optional[ProviderRegistry] = None) -> None:
-        self._registry = registry
+        self._registry = registry or ProviderRegistry()
 
     # -- chapter streaming --------------------------------------------------
 
@@ -167,7 +168,7 @@ class AudioStreamer:
             raise ValueError("Preview text is empty after truncation")
 
         # Pick the first available provider.
-        provider = self._registry.first_available()
+        provider = self._registry.default()
         if provider is None:
             raise RuntimeError("No speech provider available")
 
@@ -221,40 +222,50 @@ def create_streaming_blueprint(
         """Stream chapter audio with HTTP Range support for seeking.
 
         The browser can send ``Range: bytes=<start>-`` to seek into the file,
-        which is essential for scrubbing / resuming playback.
+        which is essential for scrubbing / resuming playback.  For chapters
+        stored in object storage (P0.2+) the response is a 302 redirect to a
+        signed URL; local-disk chapters are streamed directly.
         """
         identity = current_identity()
-        session = get_session()
 
-        # Fetch job + verify org membership.
-        job = session.get(Job, job_id)
-        if job is None or job.organization_id != identity.org.id:
-            return jsonify({"error": "Job not found"}), 404
+        # Load job + chapter inside a short-lived session; close before streaming.
+        with session_scope() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.organization_id != identity.org.id:
+                return jsonify({"error": "Job not found"}), 404
 
-        if job.status != JobStatus.completed:
-            return jsonify({"error": "Job is not completed yet"}), 409
+            if job.status != JobStatus.succeeded:
+                return jsonify({"error": "Job is not completed yet"}), 409
 
-        # Locate the chapter row.
-        ch_row = session.execute(
-            select(ChapterResult).where(
-                ChapterResult.job_id == job_id,
-                ChapterResult.index == chapter,
+            ch_row = session.execute(
+                select(ChapterResult).where(
+                    ChapterResult.job_id == job_id,
+                    ChapterResult.index == chapter,
+                )
+            ).scalar_one_or_none()
+
+            if ch_row is None:
+                return jsonify({"error": "Chapter not found"}), 404
+
+            if ch_row.status != ChapterStatus.done:
+                return jsonify({"error": "Chapter not ready"}), 409
+
+            audio_key = ch_row.audio_key  # may be None for pre-P0.2 chapters
+
+        # Prefer the storage-backed artifact (P0.2+).
+        if audio_key:
+            storage = get_storage()
+            signed = storage.signed_url(
+                audio_key, expires_in=3600,
+                download_name=f"chapter_{chapter:03d}.mp3",
             )
-        ).scalar_one_or_none()
+            from flask import redirect as _redirect
+            return _redirect(signed.url, code=302)
 
-        if ch_row is None:
-            return jsonify({"error": "Chapter not found"}), 404
-
-        if ch_row.status != ChapterStatus.done:
-            return jsonify({"error": "Chapter not ready"}), 409
-
-        # Build the expected local path (same convention as the pipeline).
-        task_dir = os.path.join(OUTPUT_FOLDER, job_id)
-        audio_path = os.path.join(task_dir, f"chapter_{chapter:03d}.mp3")
+        # Fallback: local file (pre-P0.2 chapter or local dev).
+        audio_path = os.path.join(OUTPUT_FOLDER, job_id, f"chapter_{chapter:03d}.mp3")
 
         if not os.path.isfile(audio_path):
-            # Fallback: the file may have been uploaded to storage and cleaned
-            # up locally.  In that case we can't stream — redirect to signed URL.
             return jsonify({
                 "error": "Audio file not available for streaming",
                 "hint": "Use the download endpoint for a signed URL instead",

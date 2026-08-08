@@ -678,13 +678,19 @@ def export_job_as_epub(job_id):
         return jsonify({"error": "Missing project metadata"}), 400
     
     try:
+        # Re-split source text so each chapter has its body text.
+        source = (job.project.source_text or "") if job.project else ""
+        split_chapters = text_processor.split_by_chapters(source) if source else []
+        split_by_idx = {i: ch for i, ch in enumerate(split_chapters)}
+
         # Load chapters from job results
         chapters_data = []
-        for result in job.chapter_results:
-            if result.chapter_title:
+        for result in sorted(job.chapters, key=lambda c: c.index):
+            if result.title:
+                split = split_by_idx.get(result.index, {})
                 chapters_data.append({
-                    "title": result.chapter_title,
-                    "content": result.text_content or ""
+                    "title": result.title,
+                    "content": split.get("text", ""),
                 })
         
         if not chapters_data:

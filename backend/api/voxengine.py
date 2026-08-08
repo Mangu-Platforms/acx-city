@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, redirect, request
 from sqlalchemy import select
 
 from auth import current_identity, require_auth
@@ -332,7 +332,7 @@ def list_voices():
             "style_tags": v.style_tags,
             "description": v.description,
             "provider": v.provider,
-            "sample_audio_url": v.sample_audio_url,
+            "sample_url": v.sample_audio_url,
             "languages": v.languages,
             "emotion_tags": v.emotion_tags,
             "is_cloneable": v.is_cloneable,
@@ -388,12 +388,49 @@ def get_voice(voice_id: str):
         "description": voice.description,
         "provider": voice.provider,
         "provider_voice_id": voice.provider_voice_id,
-        "sample_audio_url": voice.sample_audio_url,
+        "sample_url": voice.sample_audio_url,
         "languages": voice.languages,
         "emotion_tags": voice.emotion_tags,
         "is_cloneable": voice.is_cloneable,
         "source": voice.source,
     })
+
+
+@voxengine_bp.route("/voices/<voice_id>/sample", methods=["GET"])
+@require_auth
+def get_voice_sample(voice_id: str):
+    """Return a short audio sample for a voice.
+
+    If the voice has a pre-recorded `sample_audio_url`, redirects there (302).
+    Otherwise synthesises "Hello, I'm [name]." on the fly using the voice's
+    provider and returns audio/mpeg bytes directly.
+    """
+    voice = g.db.get(StockVoice, voice_id)
+    if not voice:
+        return jsonify({"error": "Voice not found"}), 404
+
+    if voice.sample_audio_url:
+        return redirect(voice.sample_audio_url, code=302)
+
+    # On-demand synthesis fallback.
+    from services.providers.registry import ProviderRegistry
+    registry = ProviderRegistry()
+    provider = registry.get(voice.provider)
+    if provider is None or not provider.is_available():
+        return jsonify({"error": f"Provider '{voice.provider}' not available"}), 503
+
+    sample_text = f"Hello, I'm {voice.display_name}. I'd love to narrate your audiobook."
+    try:
+        provider_voice_id = voice.provider_voice_id or voice.slug
+        audio_bytes = provider.synthesize(sample_text, provider_voice_id)
+        return Response(
+            audio_bytes,
+            content_type="audio/mpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception as exc:
+        log.warning("voice sample synthesis failed for %s: %s", voice_id, exc)
+        return jsonify({"error": "Sample synthesis failed"}), 500
 
 
 # ---------------------------------------------------------------------------
