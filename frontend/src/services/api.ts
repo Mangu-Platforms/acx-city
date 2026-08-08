@@ -87,7 +87,7 @@ export const audiobookAPI = {
     return res.data
   },
   getVoices: async (provider?: string, language?: string): Promise<Voice[]> => {
-    const res = await api.get<Voice[]>('/voices', { params: { provider, language } })
+    const res = await api.get<Voice[]>('/providers/voices', { params: { provider, language } })
     return res.data
   },
   synthesize: async (request: SynthesisRequest): Promise<{ task_id: string; status: string }> => {

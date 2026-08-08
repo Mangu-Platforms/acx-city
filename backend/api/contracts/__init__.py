@@ -18,6 +18,7 @@ from .voices import (
     CreateCloneOut,
     ListVoicesOut,
     ListClonesOut,
+    PreviewOut,
 )
 from .chapters import RerenderOut, WaveformOut
 from .common import ErrorOut
@@ -40,6 +41,7 @@ __all__ = [
     "CreateCloneOut",
     "ListVoicesOut",
     "ListClonesOut",
+    "PreviewOut",
     "RerenderOut",
     "WaveformOut",
     "ErrorOut",

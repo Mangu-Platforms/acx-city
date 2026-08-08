@@ -239,8 +239,9 @@ def get_providers():
     return jsonify(registry.describe_all())
 
 
-@app.route("/api/voices", methods=["GET"])
+@app.route("/api/providers/voices", methods=["GET"])
 def get_voices():
+    """Provider-registry voice list. Moved from /api/voices to resolve a collision with the StockVoice catalog blueprint."""
     provider_name = request.args.get("provider") or registry.default().name
     provider = registry.get(provider_name)
     if not provider:

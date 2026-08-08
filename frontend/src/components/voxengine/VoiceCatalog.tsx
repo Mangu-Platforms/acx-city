@@ -13,7 +13,7 @@ export interface StockVoice {
   languages: string[];
   style_tags: string[];
   emotion_tags: string[];
-  sample_url?: string;
+  sample_audio_url?: string;
 }
 
 interface VoiceCatalogProps {
@@ -249,10 +249,11 @@ export const VoiceCatalog: React.FC<VoiceCatalogProps> = ({ onSelect, selectedVo
         if (filters.accent) params.set('accent', filters.accent);
         if (filters.age_range) params.set('age_range', filters.age_range);
         if (filters.provider) params.set('provider', filters.provider);
-        if (filters.search) params.set('q', filters.search);
+        if (filters.search) params.set('search', filters.search);
+        params.set('per_page', '100');
 
-        const res = await api.get(`/api/voices?${params.toString()}`);
-        if (!cancelled) setVoices(res.data ?? []);
+        const res = await api.get(`/voices?${params.toString()}`);
+        if (!cancelled) setVoices(res.data.voices ?? []);
       } catch (err: any) {
         if (!cancelled) setError(err?.message ?? 'Failed to load voices');
       } finally {
@@ -301,33 +302,48 @@ export const VoiceCatalog: React.FC<VoiceCatalogProps> = ({ onSelect, selectedVo
       audioRef.current = null;
     }
 
-    const url = voice.sample_url ?? `/api/voices/${voice.id}/sample`;
-    const audio = new Audio(url);
-    audioRef.current = audio;
-
     setPreviewingId(voice.id);
 
-    // Stop after 5 seconds
-    const timer = setTimeout(() => {
-      audio.pause();
-      audio.currentTime = 0;
-      setPreviewingId(null);
-    }, 5000);
+    (async () => {
+      try {
+        // If pre-recorded URL exists, play it directly
+        if (voice.sample_audio_url) {
+          const audio = new Audio(voice.sample_audio_url);
+          audioRef.current = audio;
+          await audio.play();
+        } else {
+          // Fetch on-demand synthesis via axios (includes auth token)
+          const res = await api.get(`/voices/${voice.id}/sample`, { responseType: 'blob' });
+          const blob = res.data instanceof Blob ? res.data : await res.data.arrayBuffer().then(ab => new Blob([ab], { type: 'audio/mpeg' }));
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audioRef.current = audio;
+          await audio.play();
+        }
+      } catch (err: any) {
+        console.error('Preview failed:', err);
+        setPreviewingId(null);
+        return;
+      }
 
-    audio.addEventListener('ended', () => {
-      clearTimeout(timer);
-      setPreviewingId(null);
-    });
+      const timer = setTimeout(() => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current = null;
+        }
+        setPreviewingId(null);
+      }, 5000);
 
-    audio.addEventListener('error', () => {
-      clearTimeout(timer);
-      setPreviewingId(null);
-    });
+      const cleanup = () => {
+        clearTimeout(timer);
+        setPreviewingId(null);
+      };
 
-    audio.play().catch(() => {
-      clearTimeout(timer);
-      setPreviewingId(null);
-    });
+      if (audioRef.current) {
+        audioRef.current.addEventListener('ended', cleanup, { once: true });
+        audioRef.current.addEventListener('error', cleanup, { once: true });
+      }
+    })();
   }, []);
 
   // Cleanup audio on unmount

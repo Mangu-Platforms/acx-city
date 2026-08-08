@@ -119,14 +119,26 @@ export interface StockVoiceOut {
   display_name: string;
   gender: string;
   accent: string;
-  age_range: string | null;
-  style_tags: string[] | null;
-  description: string | null;
+  age_range?: string | null;
+  style_tags: string[];
+  description?: string | null;
   provider: string;
-  sample_audio_url: string | null;
-  languages: string[] | null;
-  emotion_tags: string[] | null;
+  provider_voice_id?: string | null;
+  sample_audio_url?: string | null;
+  languages: string[];
+  emotion_tags: string[];
+  is_active: boolean;
   is_cloneable: boolean;
+  source: string;
+  has_latent_embedding: boolean;
+  created_at?: string | null;
+}
+
+export interface ListVoicesOut {
+  voices: StockVoiceOut[];
+  total: number;
+  page: number;
+  pages: number;
 }
 
 export interface VoiceDetailOut {
@@ -135,16 +147,22 @@ export interface VoiceDetailOut {
   display_name: string;
   gender: string;
   accent: string;
-  age_range: string | null;
-  style_tags: string[] | null;
-  description: string | null;
+  age_range?: string | null;
+  style_tags: string[];
+  description?: string | null;
   provider: string;
-  sample_audio_url: string | null;
-  languages: string[] | null;
-  emotion_tags: string[] | null;
+  provider_voice_id?: string | null;
+  sample_audio_url?: string | null;
+  languages: string[];
+  emotion_tags: string[];
+  is_active: boolean;
   is_cloneable: boolean;
-  provider_voice_id: string | null;
-  source: string | null;
+  source: string;
+  has_latent_embedding: boolean;
+  created_at?: string | null;
+  latent_s3_key?: string | null;
+  organization_id?: string | null;
+  voice_city_voice_id?: string | null;
 }
 
 export interface VoiceCloneOut {
@@ -152,13 +170,28 @@ export interface VoiceCloneOut {
   name: string;
   status: string;
   provider: string;
-  reference_duration_seconds: number;
-  safety_similarity_score: number | null;
-  created_at: string;
+  reference_duration_seconds?: number | null;
+  safety_similarity_score?: number | null;
+  error?: string | null;
+  created_at?: string | null;
+}
+
+export interface ListClonesOut {
+  clones: VoiceCloneOut[];
+  total: number;
 }
 
 export interface CreateCloneOut {
-  error: string;
+  clone_id: string;
+  name: string;
+  status: string;
+  message: string;
+}
+
+export interface PreviewOut {
+  preview_url: string;
+  expires_in: number;
+  voice_id: string;
 }
 
 export interface RerenderOut {

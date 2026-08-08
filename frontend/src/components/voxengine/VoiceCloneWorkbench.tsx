@@ -27,8 +27,8 @@ export function VoiceCloneWorkbench({ organizationId }: VoiceCloneWorkbenchProps
 
   const fetchClones = useCallback(async () => {
     try {
-      const resp = await api.get(`/api/voices/clones`, { params: { organization_id: organizationId } })
-      setClones(resp.data)
+      const resp = await api.get(`/voices/clones`)
+      setClones(resp.data.clones ?? [])
     } catch (err) {
       console.error('Failed to load voice clones:', err)
     } finally {
@@ -43,10 +43,9 @@ export function VoiceCloneWorkbench({ organizationId }: VoiceCloneWorkbenchProps
     setUploading(true)
     try {
       const formData = new FormData()
-      formData.append('reference_audio', selectedFile)
+      formData.append('audio', selectedFile)
       formData.append('name', cloneName)
-      formData.append('organization_id', organizationId)
-      await api.post('/api/voices/clone', formData, {
+      await api.post('/voices/clone', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setCloneName('')
@@ -54,7 +53,7 @@ export function VoiceCloneWorkbench({ organizationId }: VoiceCloneWorkbenchProps
       fetchClones()
     } catch (err) {
       console.error('Failed to create voice clone:', err)
-      alert('Voice cloning not yet implemented (Phase 10)')
+      alert('Failed to create voice clone. Please try again.')
     } finally {
       setUploading(false)
     }

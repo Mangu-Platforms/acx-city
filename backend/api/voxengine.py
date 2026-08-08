@@ -8,9 +8,8 @@ Replaces backend/v1_api.py (FastAPI + Uvicorn sidecar, not deployed).
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from flask import Blueprint, Response, g, jsonify, redirect, request
+from flask import Blueprint, g, jsonify, request
 from sqlalchemy import select
 
 from auth import current_identity, require_auth
@@ -20,8 +19,6 @@ from db.voxengine_models import (
     CharacterVoiceMap,
     PipelineTrace,
     PronunciationLexicon,
-    StockVoice,
-    VoiceClone,
 )
 
 log = logging.getLogger("acx.voxengine")
@@ -295,142 +292,6 @@ def start_pipeline(project_id: str):
         "error": "Multi-agent pipeline is disabled (PIPELINE_ENABLED=false). "
                  "Enable after P1.2 when the pipeline runs through worker.py."
     }), 503
-
-
-# ---------------------------------------------------------------------------
-# Voices
-# ---------------------------------------------------------------------------
-
-@voxengine_bp.route("/voices", methods=["GET"])
-@require_auth
-def list_voices():
-    provider = request.args.get("provider")
-    gender = request.args.get("gender")
-    accent = request.args.get("accent")
-    is_active = request.args.get("is_active", "true").lower() != "false"
-    limit = min(int(request.args.get("limit", 50)), 200)
-    offset = int(request.args.get("offset", 0))
-
-    query = select(StockVoice).where(StockVoice.is_active == is_active)
-    if provider:
-        query = query.where(StockVoice.provider == provider)
-    if gender:
-        query = query.where(StockVoice.gender == gender)
-    if accent:
-        query = query.where(StockVoice.accent == accent)
-    query = query.order_by(StockVoice.display_name).offset(offset).limit(limit)
-
-    voices = g.db.execute(query).scalars().all()
-    return jsonify([
-        {
-            "id": v.id,
-            "slug": v.slug,
-            "display_name": v.display_name,
-            "gender": v.gender,
-            "accent": v.accent,
-            "age_range": v.age_range,
-            "style_tags": v.style_tags,
-            "description": v.description,
-            "provider": v.provider,
-            "sample_url": v.sample_audio_url,
-            "languages": v.languages,
-            "emotion_tags": v.emotion_tags,
-            "is_cloneable": v.is_cloneable,
-        }
-        for v in voices
-    ])
-
-
-@voxengine_bp.route("/voices/clones", methods=["GET"])
-@require_auth
-def list_voice_clones():
-    identity = current_identity()
-    clones = g.db.execute(
-        select(VoiceClone)
-        .where(VoiceClone.organization_id == identity.org.id)
-        .order_by(VoiceClone.created_at.desc())
-    ).scalars().all()
-    return jsonify([
-        {
-            "id": c.id,
-            "name": c.name,
-            "status": c.status,
-            "provider": c.provider,
-            "reference_duration_seconds": float(c.reference_duration_seconds or 0),
-            "safety_similarity_score": c.safety_similarity_score,
-            "created_at": c.created_at.isoformat(),
-        }
-        for c in clones
-    ])
-
-
-@voxengine_bp.route("/voices/clone", methods=["POST"])
-@require_auth
-def create_voice_clone():
-    """Voice cloning not yet implemented — hide behind flag at P2.1."""
-    return jsonify({"error": "Voice cloning not yet implemented"}), 501
-
-
-@voxengine_bp.route("/voices/<voice_id>", methods=["GET"])
-@require_auth
-def get_voice(voice_id: str):
-    voice = g.db.get(StockVoice, voice_id)
-    if not voice:
-        return jsonify({"error": "Voice not found"}), 404
-    return jsonify({
-        "id": voice.id,
-        "slug": voice.slug,
-        "display_name": voice.display_name,
-        "gender": voice.gender,
-        "accent": voice.accent,
-        "age_range": voice.age_range,
-        "style_tags": voice.style_tags,
-        "description": voice.description,
-        "provider": voice.provider,
-        "provider_voice_id": voice.provider_voice_id,
-        "sample_url": voice.sample_audio_url,
-        "languages": voice.languages,
-        "emotion_tags": voice.emotion_tags,
-        "is_cloneable": voice.is_cloneable,
-        "source": voice.source,
-    })
-
-
-@voxengine_bp.route("/voices/<voice_id>/sample", methods=["GET"])
-@require_auth
-def get_voice_sample(voice_id: str):
-    """Return a short audio sample for a voice.
-
-    If the voice has a pre-recorded `sample_audio_url`, redirects there (302).
-    Otherwise synthesises "Hello, I'm [name]." on the fly using the voice's
-    provider and returns audio/mpeg bytes directly.
-    """
-    voice = g.db.get(StockVoice, voice_id)
-    if not voice:
-        return jsonify({"error": "Voice not found"}), 404
-
-    if voice.sample_audio_url:
-        return redirect(voice.sample_audio_url, code=302)
-
-    # On-demand synthesis fallback.
-    from services.providers.registry import ProviderRegistry
-    registry = ProviderRegistry()
-    provider = registry.get(voice.provider)
-    if provider is None or not provider.is_available():
-        return jsonify({"error": f"Provider '{voice.provider}' not available"}), 503
-
-    sample_text = f"Hello, I'm {voice.display_name}. I'd love to narrate your audiobook."
-    try:
-        provider_voice_id = voice.provider_voice_id or voice.slug
-        audio_bytes = provider.synthesize(sample_text, provider_voice_id)
-        return Response(
-            audio_bytes,
-            content_type="audio/mpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-    except Exception as exc:
-        log.warning("voice sample synthesis failed for %s: %s", voice_id, exc)
-        return jsonify({"error": "Sample synthesis failed"}), 500
 
 
 # ---------------------------------------------------------------------------

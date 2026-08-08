@@ -8,17 +8,21 @@ Registered at ``/api/voices``.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import math
 import os
 import uuid
-from typing import Any, Optional
+from typing import Any
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, redirect, request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from auth import current_identity, require_auth
 from db.voxengine_models import StockVoice, VoiceClone
+
+log = logging.getLogger("acx.voice_catalog")
 
 voice_catalog_bp = Blueprint("voice_catalog", __name__, url_prefix="/api/voices")
 
@@ -37,7 +41,7 @@ def _paginate(
     page = max(1, page)
     per_page = max(1, min(per_page, 100))
 
-    total: int = query.with_entities(func.count()).scalar() or 0
+    total: int = query.order_by(None).with_entities(func.count()).scalar() or 0
     pages = max(1, math.ceil(total / per_page))
     rows = query.offset((page - 1) * per_page).limit(per_page).all()
 
@@ -76,7 +80,6 @@ def _serialize_voice(voice: StockVoice) -> dict[str, Any]:
 def _serialize_voice_detail(voice: StockVoice) -> dict[str, Any]:
     """Extended serialization for the single-voice detail endpoint."""
     data = _serialize_voice(voice)
-    data["latent_s3_key"] = voice.latent_s3_key
     data["organization_id"] = voice.organization_id
     data["voice_city_voice_id"] = voice.voice_city_voice_id
     return data
@@ -98,14 +101,6 @@ def _serialize_clone(clone: VoiceClone) -> dict[str, Any]:
         "error": clone.error,
         "created_at": clone.created_at.isoformat() if clone.created_at else None,
     }
-
-
-def _get_voice_or_404(voice_id: str, session: Session) -> StockVoice:
-    """Fetch a stock voice by id or abort with 404."""
-    voice = session.get(StockVoice, voice_id)
-    if voice is None:
-        return jsonify({"error": "Voice not found"}), 404
-    return voice
 
 
 # --------------------------------------------------------------------------- #
@@ -235,46 +230,46 @@ def preview_voice(voice_id: str):
         "The morning light filtered through the blinds, painting golden "
         "stripes across the wooden floor. She took a deep breath and began."
     )
+
+    if len(preview_text) > 2000:
+        return jsonify({"error": "Preview text exceeds 2000 character limit"}), 400
+
     emotion = data.get("emotion")
 
     # Lazy-import to avoid circular deps at module level
-    from services.voice_preview import VoicePreviewService
+    from services.providers import ProviderRegistry
     from storage import get_storage
 
-    storage = get_storage()
-    # Build a minimal provider registry — we only need the voice's provider.
-    from services.providers import ProviderRegistry
-
-    registry = ProviderRegistry()
-    provider = registry.get(voice.provider)
-    if provider is None:
+    provider = ProviderRegistry().get(voice.provider)
+    if provider is None or not provider.is_available():
         return jsonify({"error": f"TTS provider '{voice.provider}' is not available"}), 503
 
-    service = VoicePreviewService(
-        storage_backend=storage,
-        provider_registry={voice.provider: provider},
-    )
-
+    provider_voice_id = voice.provider_voice_id or voice.slug
     try:
-        result = service.preview_voice(
-            text=preview_text,
-            voice_id=voice.provider_voice_id or voice.slug,
-            provider=voice.provider,
-            emotion=emotion,
-        )
+        try:
+            if emotion:
+                audio = provider.synthesize_with_options(
+                    preview_text, provider_voice_id, style=emotion
+                )
+            else:
+                audio = provider.synthesize_with_options(preview_text, provider_voice_id)
+        except TypeError:
+            audio = provider.synthesize(preview_text, provider_voice_id)
     except Exception as exc:
         return jsonify({"error": f"Preview generation failed: {exc}"}), 500
 
-    # The preview service is async in spirit but the existing codebase uses
-    # sync Flask; if the service returns a coroutine, run it.
-    import asyncio
-
-    if asyncio.iscoroutine(result):
-        result = asyncio.get_event_loop().run_until_complete(result)
+    key = (
+        f"previews/{identity.org.id}/{voice.id}/"
+        f"{hashlib.sha256((preview_text + str(emotion)).encode()).hexdigest()[:16]}.mp3"
+    )
+    storage = get_storage()
+    storage.put_bytes(key, audio, content_type="audio/mpeg")
+    signed = storage.signed_url(key, expires_in=600)
 
     return jsonify({
-        "audio_url": result.get("url", ""),
-        "duration_s": result.get("duration_s", 5.0),
+        "preview_url": signed.url,
+        "expires_in": signed.expires_in,
+        "voice_id": voice.id,
     })
 
 
@@ -303,6 +298,8 @@ def compare_voices():
         return jsonify({"error": "Comparison is limited to 10 voices"}), 400
     if not text.strip():
         return jsonify({"error": "Text is required"}), 400
+    if len(text) > 500:
+        return jsonify({"error": "Comparison text exceeds 500 character limit"}), 400
 
     session: Session = g.db
     identity = current_identity()
@@ -319,7 +316,6 @@ def compare_voices():
 
     # Generate previews for each voice
     from services.providers import ProviderRegistry
-    from services.voice_preview import VoicePreviewService
     from storage import get_storage
 
     registry = ProviderRegistry()
@@ -330,36 +326,32 @@ def compare_voices():
     for v in voices:
         if v.provider not in providers_map:
             p = registry.get(v.provider)
-            if p is None:
+            if p is None or not p.is_available():
                 return jsonify({"error": f"TTS provider '{v.provider}' is not available"}), 503
             providers_map[v.provider] = p
-
-    service = VoicePreviewService(
-        storage_backend=storage,
-        provider_registry=providers_map,
-    )
-
-    import asyncio
 
     clips: list[dict[str, Any]] = []
     labels = [chr(ord("A") + i) for i in range(len(voice_ids))]
 
     for idx, voice in enumerate(voices):
+        provider = providers_map[voice.provider]
+        provider_voice_id = voice.provider_voice_id or voice.slug
         try:
-            result = service.preview_voice(
-                text=text,
-                voice_id=voice.provider_voice_id or voice.slug,
-                provider=voice.provider,
-            )
-            if asyncio.iscoroutine(result):
-                result = asyncio.get_event_loop().run_until_complete(result)
+            audio = provider.synthesize(text, provider_voice_id)
         except Exception as exc:
             return jsonify({"error": f"Preview failed for voice '{voice_ids[idx]}': {exc}"}), 500
 
+        key = (
+            f"previews/{identity.org.id}/{voice.id}/"
+            f"{hashlib.sha256(text.encode()).hexdigest()[:16]}.mp3"
+        )
+        storage.put_bytes(key, audio, content_type="audio/mpeg")
+        signed = storage.signed_url(key, expires_in=600)
+
         clip: dict[str, Any] = {
             "index": idx,
-            "audio_url": result.get("url", ""),
-            "duration_s": result.get("duration_s", 5.0),
+            "audio_url": signed.url,
+            "expires_in": signed.expires_in,
         }
         if blind:
             clip["label"] = labels[idx]
@@ -400,6 +392,54 @@ def list_emotions(voice_id: str):
         "voice_id": voice.id,
         "emotion_tags": voice.emotion_tags or [],
     })
+
+
+# --------------------------------------------------------------------------- #
+# 5b. GET /api/voices/<voice_id>/sample — Short audio sample
+# --------------------------------------------------------------------------- #
+
+@voice_catalog_bp.route("/<voice_id>/sample", methods=["GET"])
+@require_auth
+def get_voice_sample(voice_id: str):
+    """Return a short audio sample for a voice.
+
+    If the voice has a pre-recorded ``sample_audio_url``, redirects there (302).
+    Otherwise synthesises a short intro line on the fly using the voice's
+    provider and returns audio/mpeg bytes directly.
+    """
+    session: Session = g.db
+    identity = current_identity()
+
+    voice = session.get(StockVoice, voice_id)
+    if voice is None:
+        return jsonify({"error": "Voice not found"}), 404
+
+    if voice.organization_id is not None and voice.organization_id != identity.org.id:
+        return jsonify({"error": "Voice not found"}), 404
+
+    if voice.sample_audio_url:
+        return redirect(voice.sample_audio_url, code=302)
+
+    # On-demand synthesis fallback.
+    from services.providers import ProviderRegistry
+
+    provider = ProviderRegistry().get(voice.provider)
+    if provider is None or not provider.is_available():
+        return jsonify({"error": f"Provider '{voice.provider}' not available"}), 503
+
+    sample_text = f"Hello, I'm {voice.display_name}. I'd love to narrate your audiobook."
+    try:
+        audio = provider.synthesize(sample_text, voice.provider_voice_id or voice.slug)
+    except Exception as exc:
+        log.warning("voice sample synthesis failed for %s: %s", voice_id, exc)
+        return jsonify({"error": "Sample synthesis failed"}), 500
+
+    cache_directive = "private" if voice.organization_id else "public"
+    return Response(
+        audio,
+        content_type="audio/mpeg",
+        headers={"Cache-Control": f"{cache_directive}, max-age=86400"},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -448,7 +488,7 @@ def create_clone():
 
     try:
         audio_bytes = audio_file.read()
-        storage.upload_bytes(audio_bytes, audio_key, content_type=audio_file.content_type or "audio/mpeg")
+        storage.put_bytes(audio_key, audio_bytes, content_type=audio_file.content_type or "audio/mpeg")
     except Exception as exc:
         return jsonify({"error": f"Failed to store audio: {exc}"}), 500
 
@@ -463,7 +503,7 @@ def create_clone():
         provider="fish_speech",
     )
     session.add(clone)
-    session.flush()
+    session.commit()
 
     # TODO: Enqueue async job to compute latent embedding via Fish Speech S2.
     # For now the clone stays in "processing" until a worker picks it up.
@@ -515,11 +555,8 @@ def delete_clone(clone_id: str):
     identity = current_identity()
 
     clone = session.get(VoiceClone, clone_id)
-    if clone is None:
+    if clone is None or clone.organization_id != identity.org.id:
         return jsonify({"error": "Clone not found"}), 404
-
-    if clone.organization_id != identity.org.id:
-        return jsonify({"error": "Clone not found"}), 403
 
     # Clean up storage objects
     from storage import get_storage
@@ -536,6 +573,7 @@ def delete_clone(clone_id: str):
             pass  # Best-effort cleanup
 
     session.delete(clone)
+    session.commit()
 
     return jsonify({
         "clone_id": clone_id,
