@@ -18,7 +18,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from billing import record_usage
+from billing import mark_stage, record_usage, stage_done
 from db.base import utcnow
 from db.models import ChapterResult, ChapterStatus, Job
 from jobs.queue import LeaseLost  # re-export so callers import from one place
@@ -268,6 +268,10 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                     f"{identity_fingerprint}:{render_plan.cache_discriminator()}"
                 )
             key = _cache.key(task_provider.name, cache_voice_id, job.engine, rendered_chunk)
+            # Deterministic billing dedup key: same inputs → same id across retries.
+            chunk_synthesis_id = hashlib.sha256(
+                f"{task_provider.name}:{task_voice_id}:{job.engine}:{rendered_chunk}".encode()
+            ).hexdigest()[:32]
             cached = _cache.get(key)
             if cached:
                 chunk_files.append(cached)
@@ -285,6 +289,7 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                         session, job.organization_id, task_provider.name,
                         len(rendered_chunk), task_provider.cost_per_million_chars,
                         job_id=job.id,
+                        synthesis_id=chunk_synthesis_id,
                     )
 
         chapter_path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
@@ -321,6 +326,7 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         # Upload to object storage so a container restart can resume without re-synthesizing.
         try:
             _upload_chapter_audio(job, row, i, chapter_path)
+            mark_stage(session, job.id, i, "upload")
             session.commit()
         except Exception as e:
             log.error("failed to upload chapter %d to storage: %s; will re-synthesize on retry", i, e)

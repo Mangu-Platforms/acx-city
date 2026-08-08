@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from db.models import Organization, UsageEvent
+from db.models import JobStage, Organization, UsageEvent
 
 # Global default monthly quota (characters of paid synthesis). 0 = unlimited.
 DEFAULT_MONTHLY_CHAR_QUOTA = int(os.getenv("QUOTA_MONTHLY_CHARS", "0"))
@@ -82,9 +82,32 @@ def check_quota(session: Session, org: Organization, requested_chars: int, paid:
         )
 
 
-def record_usage(session: Session, organization_id: str, provider: str, characters: int,
-                 cost_per_million_chars: float, job_id: Optional[str] = None) -> UsageEvent:
-    """Append a ledger row for billable synthesis. No-op for zero-cost usage."""
+def record_usage(
+    session: Session,
+    organization_id: str,
+    provider: str,
+    characters: int,
+    cost_per_million_chars: float,
+    job_id: Optional[str] = None,
+    synthesis_id: Optional[str] = None,
+) -> UsageEvent:
+    """Append a ledger row for billable synthesis. No-op for zero-cost usage.
+
+    When ``synthesis_id`` is provided it acts as a deduplication key: if an
+    event with the same (job_id, synthesis_id) already exists the existing row
+    is returned without creating a duplicate. This makes billing idempotent on
+    job retry.
+    """
+    if synthesis_id and job_id:
+        existing = session.execute(
+            select(UsageEvent).where(
+                UsageEvent.job_id == job_id,
+                UsageEvent.synthesis_id == synthesis_id,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
     cost = estimate_cost_usd(characters, cost_per_million_chars)
     event = UsageEvent(
         organization_id=organization_id,
@@ -93,7 +116,30 @@ def record_usage(session: Session, organization_id: str, provider: str, characte
         characters=characters,
         cost_usd=cost,
         period=current_period(),
+        synthesis_id=synthesis_id,
     )
     session.add(event)
     session.flush()
     return event
+
+
+def stage_done(session: Session, job_id: str, chapter_index: int, stage_name: str) -> bool:
+    """Return True if this (job, chapter, stage) checkpoint has been committed."""
+    return session.execute(
+        select(JobStage).where(
+            JobStage.job_id == job_id,
+            JobStage.chapter_index == chapter_index,
+            JobStage.stage_name == stage_name,
+        )
+    ).scalar_one_or_none() is not None
+
+
+def mark_stage(session: Session, job_id: str, chapter_index: int, stage_name: str) -> None:
+    """Record that this stage completed (idempotent via unique constraint)."""
+    if not stage_done(session, job_id, chapter_index, stage_name):
+        session.add(JobStage(
+            job_id=job_id,
+            chapter_index=chapter_index,
+            stage_name=stage_name,
+        ))
+        session.flush()

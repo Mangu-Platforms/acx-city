@@ -8,18 +8,22 @@ from .usage import (
     QuotaExceeded,
     current_period,
     estimate_cost_usd,
+    mark_stage,
     month_usage,
     quota_for,
     record_usage,
     remaining_quota,
+    stage_done,
 )
 
 __all__ = [
     "QuotaExceeded",
     "current_period",
     "estimate_cost_usd",
+    "mark_stage",
     "month_usage",
     "quota_for",
     "record_usage",
     "remaining_quota",
+    "stage_done",
 ]

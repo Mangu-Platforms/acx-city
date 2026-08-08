@@ -259,10 +259,14 @@ class UsageEvent(Base):
 
     ``period`` is the YYYY-MM month bucket used for monthly quota checks and
     rollups, so we can enforce limits without scanning the whole table.
+    ``synthesis_id`` is a deterministic deduplication key (SHA-256 of the chunk
+    inputs). On job retry the pipeline checks for an existing event before
+    inserting, so a retried chunk is never billed twice.
     """
     __tablename__ = "usage_events"
     __table_args__ = (
         Index("ix_usage_org_period", "organization_id", "period"),
+        Index("ix_usage_job_synthesis", "job_id", "synthesis_id"),
     )
 
     id: Mapped[str] = mapped_column(GUID, primary_key=True, default=new_uuid)
@@ -272,7 +276,28 @@ class UsageEvent(Base):
     characters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     period: Mapped[str] = mapped_column(String(7), nullable=False)  # "YYYY-MM"
+    synthesis_id: Mapped[Optional[str]] = mapped_column(String(64))  # dedup key
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class JobStage(Base):
+    """Fine-grained stage checkpoints within a chapter processing run.
+
+    Stage names: "preprocess" | "synthesis" | "assemble" | "qc" | "upload"
+    A completed stage row means that stage's output is durable and need not
+    be repeated on retry. The pipeline checks for existing rows before work.
+    """
+    __tablename__ = "job_stages"
+    __table_args__ = (
+        UniqueConstraint("job_id", "chapter_index", "stage_name", name="uq_job_stage"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID, primary_key=True, default=new_uuid)
+    job_id: Mapped[str] = mapped_column(GUID, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class RateBucket(Base):
