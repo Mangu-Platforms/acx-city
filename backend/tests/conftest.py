@@ -86,16 +86,13 @@ def auth_headers(client):
 
 @pytest.fixture()
 def stub_pipeline(monkeypatch):
-    """Replace TTS provider + audio assembly so the pipeline runs offline.
+    """Stub audio assembly so the pipeline runs offline without ffmpeg.
 
-    Writes tiny fake mp3 files so QC/assembly code paths that only check for a
-    non-empty file succeed, without ffmpeg or network.
+    Synthesis is handled by FakeSpeechProvider (registered as "fake" in the
+    registry) — no monkeypatching of Edge needed when tests use provider="fake".
+    The audio util stubs make assembly/QC/export succeed without real ffmpeg.
     """
-    from services.providers.edge_provider import EdgeProvider
     from utils.audio_utils import AudioUtils
-
-    monkeypatch.setattr(EdgeProvider, "is_available", lambda self: True)
-    monkeypatch.setattr(EdgeProvider, "synthesize", lambda self, text, voice_id, engine="neural": b"ID3fakeaudio" + text[:8].encode())
 
     def fake_merge(paths, out, gap_duration=1000):
         with open(out, "wb") as f:
@@ -116,8 +113,6 @@ def stub_pipeline(monkeypatch):
             f.write(b"ID3concat")
         return True
 
-    # Normalization "fails" gracefully: the pipeline logs a warning and keeps
-    # the raw chapter audio, which is exactly what we want offline.
     def fake_normalize(inp, out, target_dBFS=None):
         return False
 
@@ -133,6 +128,11 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr(pl._audio, "export_m4b", fake_m4b)
     monkeypatch.setattr(pl._audio, "concat_audio_files", fake_concat)
     monkeypatch.setattr(pl._audio, "normalize_audio", fake_normalize)
+    # Keep edge available too (some tests use it directly via monkeypatch).
+    from services.providers.edge_provider import EdgeProvider
+    monkeypatch.setattr(EdgeProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(EdgeProvider, "synthesize",
+                        lambda self, text, voice_id, engine="neural": b"ID3fakeaudio" + text[:8].encode())
     monkeypatch.setattr(pl._registry.get("edge"), "is_available", lambda: True)
     monkeypatch.setattr(pl._registry.get("edge"), "synthesize",
                         lambda text, voice_id, engine="neural": b"ID3fake" + text[:8].encode())

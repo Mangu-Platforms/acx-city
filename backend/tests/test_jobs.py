@@ -21,8 +21,8 @@ def _seed_job(session, source_text="Chapter 1\n" + ("Hello world. " * 30), forma
     proj = m.Project(organization_id=org.id, created_by=user.id, title="B", source_text=source_text)
     session.add(proj)
     session.flush()
-    job = m.Job(organization_id=org.id, project_id=proj.id, provider="edge",
-                voice_id="en-US-AvaNeural", formats=formats)
+    job = m.Job(organization_id=org.id, project_id=proj.id, provider="fake",
+                voice_id="fake-a", formats=formats)
     q.enqueue_job(session, job)
     return job.id
 
