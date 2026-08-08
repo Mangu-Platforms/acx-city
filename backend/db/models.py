@@ -228,6 +228,13 @@ class ChapterResult(Base):
     qc_passed: Mapped[Optional[bool]] = mapped_column(Boolean)
     qc_issues: Mapped[Optional[str]] = mapped_column(Text)  # newline-joined
 
+    # Durable chapter artifacts (P0.2)
+    audio_key: Mapped[Optional[str]] = mapped_column(String(512))
+    audio_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    audio_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    content_type: Mapped[Optional[str]] = mapped_column(String(100))
+    synthesis_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
     job: Mapped["Job"] = relationship(back_populates="chapters")
 
 

@@ -63,6 +63,42 @@ class JobCanceled(Exception):
     """Raised when a cooperative cancel is observed mid-run."""
 
 
+def _upload_chapter_audio(
+    job: Job, chapter_row: ChapterResult, chapter_index: int, audio_path: str
+) -> str:
+    """Upload chapter audio to object storage and record checksum + size on the row.
+
+    Returns the storage key. Raises on any failure; caller decides whether to
+    retry or mark the chapter pending again.
+    """
+    storage = get_storage()
+
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"Chapter audio not found: {audio_path}")
+
+    with open(audio_path, "rb") as f:
+        audio_bytes_data = f.read()
+    sha256 = hashlib.sha256(audio_bytes_data).hexdigest()
+
+    qc = _audio.qc_check(audio_path)
+    if not qc.get("duration_s"):
+        raise ValueError(f"Chapter {chapter_index}: audio has no decodable duration")
+
+    key = _output_key(job, f"chapters/{chapter_index:03d}.mp3")
+    storage.put_bytes(key, audio_bytes_data, content_type="audio/mpeg")
+
+    chapter_row.audio_key = key
+    chapter_row.audio_sha256 = sha256
+    chapter_row.audio_bytes = len(audio_bytes_data)
+    chapter_row.content_type = "audio/mpeg"
+
+    log.info(
+        "uploaded chapter %d to storage: key=%s bytes=%d sha256=%s…",
+        chapter_index, key, len(audio_bytes_data), sha256[:8],
+    )
+    return key
+
+
 def _synthesize_with_retry(provider, chunk: str, voice_id: str, engine: str, render_plan=None) -> bytes:
     """Synthesize one chunk with exponential-backoff retry.
 
@@ -133,11 +169,27 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
 
         row = ch_rows[i]
         if row.status == ChapterStatus.done:
-            # Resume: chapter already assembled in a previous attempt.
+            # Resume: prefer durable storage copy (survives container replacement).
+            if row.audio_key and row.audio_sha256:
+                try:
+                    audio_data = get_storage().get_bytes(row.audio_key)
+                    if hashlib.sha256(audio_data).hexdigest() == row.audio_sha256:
+                        path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
+                        with open(path, "wb") as f:
+                            f.write(audio_data)
+                        chapter_files.append(path)
+                        chapter_titles.append(chapter["title"])
+                        log.info("resumed chapter %d from storage (key=%s)", i, row.audio_key)
+                        continue
+                    log.warning("chapter %d storage checksum mismatch; re-synthesizing", i)
+                except Exception as e:
+                    log.warning("failed to fetch chapter %d from storage: %s; falling back", i, e)
+            # Fallback: local disk (works when storage unavailable or not yet uploaded).
             path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
             if os.path.exists(path):
                 chapter_files.append(path)
                 chapter_titles.append(chapter["title"])
+                log.info("resumed chapter %d from local disk", i)
                 continue
 
         row.status = ChapterStatus.processing
@@ -264,6 +316,17 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         job.progress = int(10 + (i + 1) * progress_per_chapter)
         job.updated_at = utcnow()
         session.commit()  # durable per-chapter checkpoint
+
+        # Upload to object storage so a container restart can resume without re-synthesizing.
+        try:
+            _upload_chapter_audio(job, row, i, chapter_path)
+            session.commit()
+        except Exception as e:
+            log.error("failed to upload chapter %d to storage: %s; will re-synthesize on retry", i, e)
+            row.status = ChapterStatus.pending
+            row.audio_key = None
+            row.audio_sha256 = None
+            session.commit()
 
     if not chapter_files:
         raise RuntimeError("No audio was produced (empty input?)")
