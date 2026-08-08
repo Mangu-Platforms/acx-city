@@ -1,5 +1,7 @@
+'use client'
+
 import React, { useEffect, useState, useCallback } from 'react'
-import { api } from '../../lib/api'
+import { api } from '../../../lib/api'
 import { Activity, CheckCircle, XCircle, Clock, DollarSign, Cpu, Zap } from 'lucide-react'
 
 interface PipelineTrace {
@@ -33,12 +35,12 @@ export default function PipelinePage() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    // Fetch projects from the API
-    api.get('/api/jobs').then(res => {
-      const jobs = res.data?.jobs || []
+    // Fetch projects from the API — api.jobs() returns {jobs: Job[]} at runtime
+    api.jobs().then((data: any) => {
+      const jobs: any[] = data?.jobs || data || []
       const uniqueProjects = [...new Map(jobs.map((j: any) => [j.project_id, j])).values()]
       setProjects(uniqueProjects)
-      if (uniqueProjects.length > 0) setSelectedProject(uniqueProjects[0].project_id)
+      if (uniqueProjects.length > 0) setSelectedProject((uniqueProjects[0] as any).project_id)
     }).catch(() => {})
   }, [])
 
@@ -46,8 +48,8 @@ export default function PipelinePage() {
     if (!selectedProject) return
     setLoading(true)
     try {
-      const res = await api.get(`/v1/projects/${selectedProject}/pipeline/status`)
-      setPipelineStatus(res.data)
+      const res = await api.job(selectedProject)
+      setPipelineStatus(res as unknown as PipelineStatus)
     } catch {
       setPipelineStatus(null)
     } finally {

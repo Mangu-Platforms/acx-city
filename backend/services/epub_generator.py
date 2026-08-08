@@ -89,7 +89,8 @@ class EPUBGenerator:
             EpubHtml chapter object
         """
         if chapter_num is None:
-            chapter_num = len(self.book.chapters) + 1
+            html_chapters = [item for item in self.book.items if type(item) is epub.EpubHtml]
+            chapter_num = len(html_chapters) + 1
 
         # Create chapter
         chapter = epub.EpubHtml(
@@ -184,24 +185,24 @@ class EPUBGenerator:
     def generate_toc(self):
         """Generate table of contents."""
         # Get all chapters
-        chapters = [item for item in self.book.items if isinstance(item, epub.EpubHtml)]
+        chapters = [item for item in self.book.items if type(item) is epub.EpubHtml]
 
         if not chapters:
             return
 
-        # Create TOC
-        toc = (
-            tuple(chapters),
-            epub.Section("Contents"),
-        )
-        self.book.toc = toc
+        # Build TOC from Link objects (ebooklib 0.18 requires Link, not EpubHtml)
+        # EpubHtml stores uid as .id (the constructor param 'uid' maps to self.id)
+        self.book.toc = [epub.Link(c.file_name, c.title, c.id) for c in chapters]
 
         # Add spine
         self.book.spine = ["nav"] + chapters
 
-        # Add navigation files
-        self.book.add_item(epub.EpubNcx())
-        self.book.add_item(epub.EpubNav())
+        # Add navigation files (guard against duplicate items)
+        existing_ids = {item.id for item in self.book.items}
+        if "ncx" not in existing_ids:
+            self.book.add_item(epub.EpubNcx())
+        if "nav" not in existing_ids:
+            self.book.add_item(epub.EpubNav())
 
     def save(self, output_path: str) -> str:
         """

@@ -1,7 +1,7 @@
 import React from 'react'
 import { Book, Dna, Mic, Users, BookOpen, Activity, Library } from 'lucide-react'
 
-type Page = 'production' | 'voice-city' | 'voices' | 'clone' | 'studio'
+type Page = 'production' | 'voice-city' | 'voices' | 'clone' | 'studio' | 'characters' | 'lexicon'
 
 interface NavigationProps {
   current: Page

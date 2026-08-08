@@ -128,7 +128,7 @@ function AudiobookApp({ userEmail, onLogout }: { userEmail?: string; onLogout: (
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <VoiceCatalog onSelect={(v) => { setProvider(v.provider); setSelectedVoice(v.provider_voice_id || ''); setWorkspace('production') }} />
+          <VoiceCatalog onSelect={(v) => { setProvider(v.provider); setSelectedVoice(v.id); setWorkspace('production') }} />
         </main>
       </div>
     )
