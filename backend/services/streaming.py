@@ -1,23 +1,27 @@
-"""HTTP streaming audio endpoint for real-time preview.
+"""Chapter streaming + instant voice preview (P1.4 rewrite).
 
-Provides chunked MP3 streaming for progressive playback of synthesized
-chapters and instant voice previews. Uses Flask's streaming Response with
-generators to avoid buffering entire audio files in memory.
+Design:
+  - Chapter streaming resolves audio from the chapter's durable ``audio_key``
+    only — never by rebuilding a local worker path. The response is a 302 to
+    a signed URL; Range requests are honoured by the artifact server
+    (``/api/files`` serves conditionally for the local backend, S3 natively).
+  - Voice preview is fully synchronous against the real SpeechProvider
+    interface: synthesize → validate → ``storage.put_bytes`` → return a
+    signed URL as JSON. Previews are content-addressed
+    (``previews/{org}/{hash}.mp3``), so identical requests reuse the stored
+    artifact without re-synthesis.
 
-Features:
-  - Chapter streaming with HTTP Range request support (seekable playback)
-  - Instant 5-second voice preview synthesis + stream
-  - Server-Sent Events for progress updates during long operations
-  - MP3 chunked transfer encoding for progressive browser playback
+The former async voice_preview design (async provider calls on Gunicorn
+threads, nonexistent storage methods) was deleted, not adapted.
 """
 from __future__ import annotations
 
-import io
+import hashlib
 import logging
 import os
-from typing import Generator, Optional
+from typing import Optional
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, jsonify, redirect, request
 from sqlalchemy import select
 
 from auth import current_identity, require_auth
@@ -28,17 +32,15 @@ from storage import get_storage
 
 log = logging.getLogger(__name__)
 
-# Chunk size for streaming reads (32 KiB balances latency vs. throughput).
-_CHUNK_SIZE = 32 * 1024
-
-# Where the pipeline writes chapter MP3s.
-OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "outputs")
-
 # Maximum preview text length (characters) to prevent abuse.
 _MAX_PREVIEW_CHARS = 2000
 
+# Signed preview links stay valid this long (seconds).
+_PREVIEW_URL_TTL = 3600
+
+
 # ---------------------------------------------------------------------------
-# SSE helper
+# SSE helper (used by progress endpoints elsewhere)
 # ---------------------------------------------------------------------------
 
 def format_sse_event(data: dict) -> str:
@@ -64,116 +66,44 @@ def format_sse_event(data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# AudioStreamer
+# Preview rendering
 # ---------------------------------------------------------------------------
 
 class AudioStreamer:
-    """Generators that yield MP3 audio chunks for HTTP streaming."""
+    """Synchronous preview renderer against the real provider registry."""
 
     def __init__(self, registry: Optional[ProviderRegistry] = None) -> None:
         self._registry = registry or ProviderRegistry()
 
-    # -- chapter streaming --------------------------------------------------
-
-    def stream_chapter(
-        self,
-        audio_path: str,
-        start_ms: float = 0,
-        end_ms: float | None = None,
-    ) -> Generator[bytes, None, None]:
-        """Yield audio chunks from *audio_path* via HTTP chunked transfer.
-
-        Parameters
-        ----------
-        audio_path:
-            Local filesystem path to a chapter MP3 file.
-        start_ms:
-            Byte-offset approximation for seeking (milliseconds into the file).
-            Because MP3 is variable-bitrate we estimate the byte position from
-            the file size and duration metadata when available, otherwise fall
-            back to linear interpolation at 128 kbps.
-        end_ms:
-            Optional stop position in milliseconds.  ``None`` streams to EOF.
-
-        Yields
-        ------
-        bytes
-            Raw MP3 data chunks of up to ``_CHUNK_SIZE`` bytes each.
-        """
-        if not os.path.isfile(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-        file_size = os.path.getsize(audio_path)
-        if file_size == 0:
-            return
-
-        # Estimate byte offsets from milliseconds using a 128 kbps assumption
-        # (128_000 bits/s = 16_000 bytes/s).  This is approximate for VBR MP3
-        # but good enough for seek-to-start — the browser will re-sync.
-        _BYTES_PER_MS = 16.0  # 16 000 B/s ÷ 1000
-
-        start_byte = int(start_ms * _BYTES_PER_MS) if start_ms > 0 else 0
-        end_byte = int(end_ms * _BYTES_PER_MS) if end_ms is not None else file_size
-
-        # Clamp to valid range.
-        start_byte = max(0, min(start_byte, file_size))
-        end_byte = max(start_byte, min(end_byte, file_size))
-
-        with open(audio_path, "rb") as fh:
-            fh.seek(start_byte)
-            remaining = end_byte - start_byte
-            while remaining > 0:
-                chunk = fh.read(min(_CHUNK_SIZE, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    # -- instant preview ----------------------------------------------------
-
-    def stream_preview(
+    def render_preview(
         self,
         text: str,
         voice_id: str,
         emotion: str | None = None,
         duration_s: float = 5.0,
-    ) -> Generator[bytes, None, None]:
-        """Synthesize a short preview and stream it chunk by chunk.
+        provider_name: str | None = None,
+    ) -> tuple[bytes, str]:
+        """Synthesize a short preview; returns (mp3_bytes, provider_name).
 
-        The text is truncated to ``_MAX_PREVIEW_CHARS`` to keep latency low.
-        Synthesis happens eagerly (the provider returns all bytes at once) and
-        then the result is chunked out for progressive playback.
-
-        Parameters
-        ----------
-        text:
-            Plain text to synthesize.
-        voice_id:
-            Provider voice identifier.
-        emotion:
-            Optional emotion/style tag (passed to ``synthesize_with_options``
-            when the provider supports it).
-        duration_s:
-            Target preview duration in seconds.  We truncate or pad text to
-            approximate this length at ~150 words/min (≈ 12.5 chars/s for
-            English).
+        Text is truncated to approximate ``duration_s`` at the spoken-English
+        pacing constant (~12.5 chars/s). Synchronous end to end: real
+        providers are synchronous, and this runs on a Flask worker thread.
         """
-        if self._registry is None:
-            raise RuntimeError("ProviderRegistry not configured on AudioStreamer")
-
-        # Truncate text to approximate the requested duration.
         from utils.audio_utils import CHARS_PER_SECOND
         max_chars = int(duration_s * CHARS_PER_SECOND)
         truncated = text[:max_chars].strip()
         if not truncated:
             raise ValueError("Preview text is empty after truncation")
 
-        # Pick the first available provider.
-        provider = self._registry.default()
-        if provider is None:
-            raise RuntimeError("No speech provider available")
+        if provider_name:
+            provider = self._registry.get(provider_name)
+            if provider is None or not provider.is_available():
+                raise RuntimeError(f"Provider {provider_name!r} is unavailable")
+        else:
+            provider = self._registry.default()
+            if provider is None:
+                raise RuntimeError("No speech provider available")
 
-        # Synthesize.
         kwargs: dict = {}
         if emotion:
             kwargs["style"] = emotion
@@ -184,14 +114,7 @@ class AudioStreamer:
         except TypeError:
             # Provider doesn't accept style — fall back to plain synthesis.
             audio_bytes = provider.synthesize(truncated, voice_id)
-
-        # Stream the result in chunks.
-        buf = io.BytesIO(audio_bytes)
-        while True:
-            chunk = buf.read(_CHUNK_SIZE)
-            if not chunk:
-                break
-            yield chunk
+        return audio_bytes, provider.name
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +129,12 @@ def create_streaming_blueprint(
     Endpoints
     ---------
     ``GET /api/stream/<job_id>/chapter/<int:chapter>``
-        Stream a completed chapter's audio with optional Range header support.
+        302 to a signed URL for the chapter's durable artifact. The artifact
+        server honours Range requests for seeking.
 
     ``POST /api/stream/preview``
-        Stream an instant voice preview (JSON body: ``text``, ``voice_id``,
-        optional ``emotion`` and ``duration``).
+        Synthesize (or reuse) a short preview; returns JSON with a signed
+        ``url``.
     """
     bp = Blueprint("streaming", __name__, url_prefix="/api/stream")
     streamer = AudioStreamer(registry=registry)
@@ -220,16 +144,14 @@ def create_streaming_blueprint(
     @bp.route("/<job_id>/chapter/<int:chapter>", methods=["GET"])
     @require_auth
     def stream_chapter_audio(job_id: str, chapter: int):
-        """Stream chapter audio with HTTP Range support for seeking.
+        """302 to a signed URL for the chapter's durable audio.
 
-        The browser can send ``Range: bytes=<start>-`` to seek into the file,
-        which is essential for scrubbing / resuming playback.  For chapters
-        stored in object storage (P0.2+) the response is a 302 redirect to a
-        signed URL; local-disk chapters are streamed directly.
+        Resolution is by ``audio_key`` ONLY (P1.4): a chapter without a
+        durable artifact is an error state, never an excuse to guess at a
+        worker's local disk.
         """
         identity = current_identity()
 
-        # Load job + chapter inside a short-lived session; close before streaming.
         with session_scope() as session:
             job = session.get(Job, job_id)
             if job is None or job.organization_id != identity.org.id:
@@ -251,106 +173,49 @@ def create_streaming_blueprint(
             if ch_row.status != ChapterStatus.done:
                 return jsonify({"error": "Chapter not ready"}), 409
 
-            audio_key = ch_row.audio_key  # may be None for pre-P0.2 chapters
+            audio_key = ch_row.audio_key
 
-        # Prefer the storage-backed artifact (P0.2+).
-        if audio_key:
-            storage = get_storage()
-            signed = storage.signed_url(
-                audio_key, expires_in=3600,
-                download_name=f"chapter_{chapter:03d}.mp3",
-            )
-            from flask import redirect as _redirect
-            return _redirect(signed.url, code=302)
-
-        # Fallback: local file (pre-P0.2 chapter or local dev).
-        audio_path = os.path.join(OUTPUT_FOLDER, job_id, f"chapter_{chapter:03d}.mp3")
-
-        if not os.path.isfile(audio_path):
+        if not audio_key:
             return jsonify({
-                "error": "Audio file not available for streaming",
-                "hint": "Use the download endpoint for a signed URL instead",
-            }), 404
+                "error": "Chapter has no durable audio artifact",
+                "hint": "Re-run the job; chapters are uploaded to storage on completion",
+            }), 409
 
-        file_size = os.path.getsize(audio_path)
-
-        # Parse Range header (RFC 7233).
-        range_header = request.headers.get("Range")
-        start_byte = 0
-        end_byte = file_size - 1
-        status_code = 200
-
-        if range_header:
-            # Expect "bytes=<start>[-<end>]"
-            try:
-                range_spec = range_header.replace("bytes=", "").strip()
-                if "-" in range_spec:
-                    parts = range_spec.split("-", 1)
-                    start_byte = int(parts[0]) if parts[0] else 0
-                    end_byte = int(parts[1]) if parts[1] else file_size - 1
-                else:
-                    start_byte = int(range_spec)
-            except (ValueError, IndexError):
-                return jsonify({"error": "Invalid Range header"}), 416
-
-            # Validate range.
-            if start_byte >= file_size or end_byte >= file_size or start_byte > end_byte:
-                resp = Response(status=416)
-                resp.headers["Content-Range"] = f"bytes */{file_size}"
-                return resp
-
-            status_code = 206
-
-        content_length = end_byte - start_byte + 1
-
-        def generate():
-            with open(audio_path, "rb") as fh:
-                fh.seek(start_byte)
-                remaining = content_length
-                while remaining > 0:
-                    chunk = fh.read(min(_CHUNK_SIZE, remaining))
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    yield chunk
-
-        resp = Response(
-            stream_with_context(generate()),
-            status=status_code,
-            content_type="audio/mpeg",
-        )
-        resp.headers["Accept-Ranges"] = "bytes"
-        resp.headers["Content-Length"] = str(content_length)
-        resp.headers["Content-Disposition"] = (
-            f'inline; filename="chapter_{chapter:03d}.mp3"'
-        )
-        if status_code == 206:
-            resp.headers["Content-Range"] = (
-                f"bytes {start_byte}-{end_byte}/{file_size}"
-            )
-        return resp
+        storage = get_storage()
+        # No download_name: the artifact server serves inline (streamable)
+        # and honours Range; the download endpoint is the attachment path.
+        signed = storage.signed_url(audio_key, expires_in=3600)
+        return redirect(signed.url, code=302)
 
     # -- instant preview ----------------------------------------------------
 
     @bp.route("/preview", methods=["POST"])
     @require_auth
     def stream_preview_audio():
-        """Stream an instant voice preview.
+        """Synthesize a short preview and return a signed URL.
 
         Request JSON::
 
             {
                 "text": "Hello, welcome to the show.",
                 "voice_id": "Joanna",
-                "emotion": "excited",       // optional
-                "duration": 5.0             // optional, seconds
+                "provider": "edge",        // optional, else registry default
+                "emotion": "excited",      // optional
+                "duration": 5.0            // optional, seconds
             }
 
-        The response is chunked ``audio/mpeg`` for progressive playback.
+        Response JSON::
+
+            {"url": "...", "provider": "edge", "cached": false}
+
+        Previews are content-addressed per org; identical requests reuse the
+        stored artifact without re-synthesis.
         """
+        identity = current_identity()
         body = request.get_json(silent=True) or {}
         text = (body.get("text") or "").strip()
         voice_id = (body.get("voice_id") or "").strip()
+        provider_name = (body.get("provider") or "").strip() or None
         emotion = body.get("emotion")
         duration_s = float(body.get("duration", 5.0))
 
@@ -363,21 +228,29 @@ def create_streaming_blueprint(
                 "error": f"text exceeds {_MAX_PREVIEW_CHARS} character limit",
             }), 400
 
-        try:
-            generator = streamer.stream_preview(
-                text=text,
-                voice_id=voice_id,
-                emotion=emotion,
-                duration_s=duration_s,
-            )
-            resp = Response(
-                stream_with_context(generator),
-                content_type="audio/mpeg",
-            )
-            resp.headers["Transfer-Encoding"] = "chunked"
-            resp.headers["Cache-Control"] = "no-store"
-            return resp
+        digest = hashlib.sha256(
+            f"{provider_name or 'default'}:{voice_id}:{emotion or ''}:"
+            f"{duration_s}:{text}".encode()
+        ).hexdigest()[:32]
+        key = f"previews/{identity.org.id}/{digest}.mp3"
+        storage = get_storage()
 
+        try:
+            cached = storage.exists(key)
+            if not cached:
+                audio_bytes, provider_used = streamer.render_preview(
+                    text=text, voice_id=voice_id, emotion=emotion,
+                    duration_s=duration_s, provider_name=provider_name,
+                )
+                storage.put_bytes(key, audio_bytes, content_type="audio/mpeg")
+            else:
+                provider_used = provider_name or "cached"
+            signed = storage.signed_url(key, expires_in=_PREVIEW_URL_TTL)
+            return jsonify({
+                "url": signed.url,
+                "provider": provider_used,
+                "cached": cached,
+            })
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:

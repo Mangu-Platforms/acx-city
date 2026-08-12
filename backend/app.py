@@ -515,8 +515,21 @@ def serve_local_file(key):
         return jsonify({"error": "Not found"}), 404
 
     mimetype = "audio/mpeg" if key.endswith(".mp3") else "audio/mp4" if key.endswith(".m4b") else "application/octet-stream"
-    download_name = request.args.get("name") or os.path.basename(key)
-    return send_file(storage._path(key), as_attachment=True, download_name=download_name, mimetype=mimetype)
+    # With a name param this is a download (attachment); without one it is a
+    # streamable inline response. conditional=True enables HTTP Range (206)
+    # so audio players can seek — S3 gives this natively, local serves here.
+    download_name = request.args.get("name")
+    resp = send_file(
+        storage._path(key),
+        as_attachment=bool(download_name),
+        download_name=download_name or os.path.basename(key),
+        mimetype=mimetype,
+        conditional=True,
+    )
+    # Werkzeug only sets this on actual Range responses; advertise
+    # seekability on plain 200s too so players know they can seek.
+    resp.headers["Accept-Ranges"] = "bytes"
+    return resp
 
 
 @app.route("/api/usage", methods=["GET"])

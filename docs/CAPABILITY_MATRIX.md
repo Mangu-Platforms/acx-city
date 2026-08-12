@@ -30,7 +30,7 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Pronunciation lexicon | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | P1.3: lexicon edit changes chapter checksums in the default worker path (`test_lexicon_edit_changes_audio_checksum`, with determinism control); CRUD E2E in `test_e2e_voxengine.py` |
 | Multi-agent pipeline | Partial | `/api` | Flag-gated | Partial | No | Yes | **No** | P1.2: typed fallbacks per stage, degradation surfaced (`test_pipeline_convergence.py`); Celery fabric deleted — runs inside worker only. Still flag-gated default off |
 | Voice preview | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `test_voice_sample_synthesized_on_demand` asserts the sample decodes, is non-silent, and is deterministic (P1.0) |
-| Chapter streaming | Partial | Yes | Yes | Yes | n/a | Partial | **No** | Streaming E2E serves stubbed chapter bytes; preview E2E asserts patched provider bytes verbatim. Re-earn in P1.4 |
+| Chapter streaming | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | P1.4: audio_key-only resolution; real-audio E2E follows the signed redirect, decodes, and seeks via Range 206 (`test_stream_chapter_real_audio_with_ranges`); preview returns a signed URL to stored decodable audio |
 | Waveform | Partial | Yes | Yes | No | n/a | Partial | **No** | E2E ran over stubbed audio; also Durable=No — the previous Ship=Yes violated the all-Yes rule outright |
 | Single-chapter rerender | Partial | 503 | **No** | No | No | Yes | **No** | `api/voxengine.py:403-417`; `test_e2e_voxengine.py::test_rerender_not_implemented` |
 | Voice cloning | Yes | 201/GET/DELETE | Yes | Yes | n/a | Partial | **No** | Lifecycle E2E only (CRUD round-trip of arbitrary bytes); nothing synthesizes with a cloned voice. Gated behind a real provider pipeline (P2.1) |
@@ -54,3 +54,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P1.1** | Media validation before QC (validate → upload → verify → done ordering), cache-hit validation + eviction, `qc_policy_version`, paid fake twin | ✅ Complete | 2026-08-12 |
 | **P1.2** | Pipeline convergence: typed fallbacks, explicit stage checks, degradation surfaced; Celery/Redis task fabric deleted | ✅ Complete | 2026-08-12 |
 | **P1.3** | Lexicon applied in default worker path; assignment + lexicon edits proven audible by checksum diff | ✅ Complete | 2026-08-12 |
+| **P1.4** | Preview → signed URL (sync, content-addressed); chapter streaming audio_key-only with Range support; async voice_preview deleted | ✅ Complete | 2026-08-12 |

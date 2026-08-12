@@ -1,19 +1,21 @@
-"""End-to-end tests for the streaming endpoints (services/streaming.py).
+"""End-to-end tests for the streaming endpoints (services/streaming.py, P1.4).
 
 Covers:
   - GET /api/stream/<job_id>/chapter/<n>
       * 302 redirect to a signed URL when the chapter has a storage audio_key
-      * local-file fallback (audio_key NULL): full body, Range requests, 416
+      * audio_key is the ONLY resolution path: a chapter without a durable
+        artifact is 409, never a local-disk guess
+      * real-audio round trip: follow the redirect, decode, seek via Range
       * authz / state errors: cross-org 404, queued 409, missing chapter 404
   - POST /api/stream/preview
-      * happy path streams audio/mpeg bytes (offline via class-level patch)
+      * returns a signed URL to a stored, decodable, content-addressed
+        preview; identical requests reuse it (cached=true)
       * validation: missing text / voice_id, oversized text, unauthenticated
 
-Deterministic and offline: jobs run with provider="fake" (FakeSpeechProvider)
-under the stub_pipeline fixture; the preview path additionally patches
-EdgeProvider.synthesize_with_options because registry.default() selects edge
-and its real implementation would hit the network.
+Real-audio tests run without stub_pipeline against FakeSpeechProvider's
+genuine MP3 output; state-machine tests keep the fast stubs.
 """
+import io
 import os
 
 import pytest
@@ -29,7 +31,11 @@ BOOK_TEXT = (
     "Call me Ishmael. " * 15
 )
 
-LOCAL_BYTES = b"ID3localfile"  # 12 bytes; deterministic local-fallback content
+
+def _follow(api, url):
+    """GET a signed URL through the test client (strip scheme+host)."""
+    path_and_query = url.split("://", 1)[-1].split("/", 1)[1]
+    return api.get("/" + path_and_query)
 
 
 @pytest.fixture()
@@ -147,19 +153,17 @@ def test_stream_chapter_redirects_to_signed_url(engine, stub_pipeline, api):
     assert "/api/files/" in location
     assert "expires=" in location
     assert "sig=" in location
-    assert "name=chapter_000.mp3" in location
 
 
 # ---------------------------------------------------------------------------
-# 2. Local-file fallback: full body, Range requests, 416
+# 2. audio_key is the only path: no artifact → 409, never a local-disk guess
 # ---------------------------------------------------------------------------
 
-def test_stream_chapter_local_file_fallback_and_ranges(engine, stub_pipeline, api):
+def test_stream_chapter_without_artifact_is_conflict(engine, stub_pipeline, api):
     api.signup()
     job_id = _enqueue_job(api)
     _run_job_to_success(api, job_id)
 
-    # Force the local-disk branch: clear the storage pointer.
     from db.models import ChapterResult
 
     with session_scope() as session:
@@ -172,40 +176,47 @@ def test_stream_chapter_local_file_fallback_and_ranges(engine, stub_pipeline, ap
         row.audio_key = None
         row.audio_sha256 = None
 
-    # Write known bytes where the streamer looks for local chapters.
-    chapter_dir = os.path.join(os.environ["OUTPUT_FOLDER"], job_id)
-    os.makedirs(chapter_dir, exist_ok=True)
-    audio_path = os.path.join(chapter_dir, "chapter_000.mp3")
-    with open(audio_path, "wb") as f:
-        f.write(LOCAL_BYTES)
-
-    size = len(LOCAL_BYTES)  # 12
-
-    # -- full-body request ---------------------------------------------------
     r = api.get(f"/api/stream/{job_id}/chapter/0")
-    assert r.status_code == 200
-    assert r.mimetype == "audio/mpeg"
-    assert r.headers.get("Accept-Ranges") == "bytes"
-    assert r.headers.get("Content-Length") == str(size)
-    assert r.headers.get("Content-Disposition") == 'inline; filename="chapter_000.mp3"'
-    assert r.data == LOCAL_BYTES
+    assert r.status_code == 409
+    assert "durable audio artifact" in r.get_json()["error"]
 
-    # -- partial content -----------------------------------------------------
-    r = api.get(f"/api/stream/{job_id}/chapter/0",
-                extra_headers={"Range": "bytes=3-6"})
-    assert r.status_code == 206
-    assert r.mimetype == "audio/mpeg"
-    assert r.headers.get("Content-Range") == f"bytes 3-6/{size}"
-    assert r.headers.get("Content-Length") == "4"
-    assert r.data == LOCAL_BYTES[3:7]
-    assert len(r.data) == 4
 
-    # -- unsatisfiable range -------------------------------------------------
-    r = api.get(f"/api/stream/{job_id}/chapter/0",
-                extra_headers={"Range": "bytes=999999-"})
-    assert r.status_code == 416
-    assert r.headers.get("Content-Range") == f"bytes */{size}"
-    assert r.data == b""
+# ---------------------------------------------------------------------------
+# 2b. Real audio round trip: follow the redirect, decode, seek via Range
+# ---------------------------------------------------------------------------
+
+def test_stream_chapter_real_audio_with_ranges(engine, api):
+    from pydub import AudioSegment
+
+    api.signup("stream-real@example.com")
+    job_id = _enqueue_job(api)
+    _run_job_to_success(api, job_id)
+
+    r = api.get(f"/api/stream/{job_id}/chapter/0")
+    assert r.status_code == 302
+    location = r.headers["Location"]
+
+    # Full body: inline (not attachment), decodable, seekable.
+    full = _follow(api, location)
+    assert full.status_code == 200
+    assert full.mimetype == "audio/mpeg"
+    disposition = full.headers.get("Content-Disposition", "")
+    assert "attachment" not in disposition, "streaming must serve inline"
+    assert full.headers.get("Accept-Ranges") == "bytes"
+    seg = AudioSegment.from_file(io.BytesIO(full.data), format="mp3")
+    assert len(seg) > 1000 and seg.dBFS > -45
+
+    # Partial content: a seek returns exactly the requested slice.
+    part = api.get("/" + location.split("://", 1)[-1].split("/", 1)[1],
+                   extra_headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206
+    assert part.headers.get("Content-Range") == f"bytes 0-99/{len(full.data)}"
+    assert part.data == full.data[:100]
+
+    # Unsatisfiable range.
+    bad = api.get("/" + location.split("://", 1)[-1].split("/", 1)[1],
+                  extra_headers={"Range": f"bytes={len(full.data) + 10}-"})
+    assert bad.status_code == 416
 
 
 # ---------------------------------------------------------------------------
@@ -247,37 +258,46 @@ def test_stream_chapter_authz_and_state_errors(engine, stub_pipeline, api):
 
 
 # ---------------------------------------------------------------------------
-# 4. Instant preview happy path (offline)
+# 4. Instant preview: signed URL to a stored, decodable, deduplicated artifact
 # ---------------------------------------------------------------------------
 
-def test_stream_preview_returns_mpeg_bytes(engine, stub_pipeline, api, monkeypatch):
-    """Preview synthesizes via registry.default() (edge under stub_pipeline).
+def test_stream_preview_returns_signed_url_to_real_audio(engine, api):
+    from pydub import AudioSegment
 
-    stub_pipeline patches EdgeProvider.is_available/synthesize at class level,
-    but the preview path calls synthesize_with_options, which on EdgeProvider
-    is real network code — patch it too so the test stays offline.
-    """
-    from services.providers.edge_provider import EdgeProvider
+    api.signup("preview-real@example.com")
+    payload = {
+        "text": "Hello there, and welcome to the audition.",
+        "voice_id": "fake-a",
+        "provider": "fake",
+    }
+    r = api.post("/api/stream/preview", json=payload)
+    assert r.status_code == 200, r.get_data(as_text=True)[:200]
+    body = r.get_json()
+    assert body["url"] and body["cached"] is False
+    assert body["provider"] == "fake"
 
-    monkeypatch.setattr(
-        EdgeProvider,
-        "synthesize_with_options",
-        lambda self, text, voice_id, engine="neural", **kw: (
-            b"ID3preview" + text[:8].encode()
-        ),
-    )
+    fetched = _follow(api, body["url"])
+    assert fetched.status_code == 200
+    seg = AudioSegment.from_file(io.BytesIO(fetched.data), format="mp3")
+    assert len(seg) > 300 and seg.dBFS > -45, "preview must be real audible audio"
 
-    api.signup()
+    # Content-addressed: an identical request reuses the stored artifact.
+    r2 = api.post("/api/stream/preview", json=payload)
+    assert r2.status_code == 200
+    body2 = r2.get_json()
+    assert body2["cached"] is True
+    assert body2["url"].split("?")[0] == body["url"].split("?")[0]
+
+
+def test_stream_preview_unavailable_provider_is_503(engine, api):
+    api.signup("preview-unavail@example.com")
     r = api.post("/api/stream/preview", json={
         "text": "Hello world",
-        "voice_id": "en-US-AriaNeural",
+        "voice_id": "Joanna",
+        "provider": "polly",  # no AWS credentials in tests → unavailable
     })
-    assert r.status_code == 200, r.get_data(as_text=True)[:200]
-    assert r.mimetype == "audio/mpeg"
-    assert r.headers.get("Cache-Control") == "no-store"
-    assert r.data.startswith(b"ID3")
-    # Deterministic body from the patched provider: text passes through intact.
-    assert r.data == b"ID3previewHello wo"
+    assert r.status_code == 503
+    assert "unavailable" in r.get_json()["error"]
 
 
 # ---------------------------------------------------------------------------
