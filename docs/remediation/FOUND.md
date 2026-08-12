@@ -85,6 +85,43 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
   configure build/run only; the repo/branch link lives in Railway's dashboard
   (Service → Settings → Source). User must eyeball it.
 
+## 2026-08-12 (P1.0 session): test-infrastructure defects found while making
+## the golden path honest
+
+### Fixed this session
+
+1. **`stub_pipeline` permanently froze stubs onto the pipeline singletons.**
+   The fixture patched the `AudioUtils` class first, then the already-
+   instantiated `jobs.pipeline._audio` singleton — so monkeypatch recorded
+   the *already-stubbed* class value as the "original" and re-installed the
+   stub as a permanent instance attribute at teardown. Same trap on the
+   registry's Edge provider instance. Consequence: any real-audio test
+   running after any stubbed test silently ran stubbed. Fixed: class-level
+   patches only, plus defensive removal of shadowing instance attributes.
+2. **Test env bound too late → suite ran against the developer's real
+   `backend/cache/`.** `jobs.pipeline` instantiates
+   `SynthesisCache(CACHE_FOLDER)` at import time; `test_jobs.py` imports
+   `worker` at module top level; pytest imports test modules during
+   collection — before the session env fixture ran. Result: the whole suite
+   used `backend/cache/` (cwd-relative default), where stale 23-byte
+   `b"ID3fake…"` chunks from the pre-P1.0 provider poisoned real synthesis.
+   Fixed: env defaults now set at conftest import time; purged 8 sub-1KB
+   poisoned entries from `backend/cache/`.
+
+### Open (feeds P1.1)
+
+3. **The synthesis cache is trusted blindly, forever.** `SynthesisCache.get`
+   returns any non-empty file; nothing validates decodability or checksum on
+   a cache hit, so one poisoned/stale entry silently becomes book audio (or,
+   as observed, a hard merge failure). P1.1's media validation must cover
+   cache hits, and a validation failure must invalidate the implicated cache
+   entries before retrying — otherwise a poisoned entry retries forever.
+4. **`_upload_chapter_audio` failure keeps the bad chapter in the current
+   run's assembly.** `chapter_files` is appended before the upload/validation
+   try/except (pipeline.py:320 vs :328); on failure the row is reset to
+   pending for the *next* run, but the in-memory path still feeds *this*
+   run's final MP3/M4B. P1.1's validate-before-done ordering fixes this.
+
 ### Open items (need user action or a later phase)
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`
