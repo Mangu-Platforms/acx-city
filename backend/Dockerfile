@@ -30,8 +30,11 @@ USER appuser
 
 EXPOSE 5000
 
+# Liveness only (P1.8): the container is healthy if the process answers.
+# Dependency failures surface via /health/ready — they must not get the
+# container killed and restarted in a loop.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://localhost:5000/api/health || exit 1
+    CMD curl -fsS http://localhost:5000/health/live || exit 1
 
 # tini as init for signal handling. The entrypoint runs migrations (api role)
 # then execs the given command. Override CMD in the worker service.

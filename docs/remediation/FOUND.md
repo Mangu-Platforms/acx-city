@@ -180,6 +180,17 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
   P1.0–P1.6). Fine locally; when Actions unlocks, CI wall-clock will be
   dominated by it. Splitting fast/slow markers is an easy later win.
 
+## 2026-08-12 (P1.8 session)
+
+- **Redis is now officially optional.** Readiness does not check it (nothing
+  in the deployed runtime uses it since the Celery deletion); the legacy
+  `healthcheck.py` script and the compose `redis` service remain only as
+  unused conveniences. Dropping them is a user call.
+- **`/api/health` retained for dashboard back-compat**; the real contract is
+  now `/health/live` (liveness, dependency-free) + `/health/ready`
+  (DB / migration stamp / storage round-trip / worker heartbeat age /
+  provider availability; hard failures 503, soft signals degraded-200).
+
 ### Open items (need user action or a later phase)
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`

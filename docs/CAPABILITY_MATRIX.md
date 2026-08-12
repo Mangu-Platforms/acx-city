@@ -58,3 +58,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P1.5** | ChapterRevision history, content-aware resume (synthesis_id), selective + forced rerender, prior audio live throughout | ✅ Complete | 2026-08-12 |
 | **P1.6** | Exports build from the active-revision set; ordered manifest with input+output checksums, byte-reproducible; EPUB from revision source_text | ✅ Complete | 2026-08-12 |
 | **P1.7** | Dashboard pipeline page rebuilt on the canonical client: queue/workers/providers/storage/QC health, stage timelines, exports; observational only. Backed by /api/ops/pipeline + /api/jobs/:id/stages (tested, org-scoped) | ✅ Complete | 2026-08-12 |
+| **P1.8** | /health/live (no dependencies) vs /health/ready (DB, migrations, storage round-trip, worker heartbeat age, providers); worker death → workers: stale within 90s; provider outage degrades, never crashes; Dockerfile HEALTHCHECK → /health/live | ✅ Complete | 2026-08-12 |

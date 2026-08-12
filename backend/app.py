@@ -701,6 +701,124 @@ def generate_epub():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/health/live", methods=["GET"])
+def health_live():
+    """Liveness: the process answers HTTP. Touches NO dependency — a dead
+    database or storage outage must never get the container killed (P1.8)."""
+    return jsonify({"status": "alive"}), 200
+
+
+@app.route("/health/ready", methods=["GET"])
+def health_ready():
+    """Readiness (P1.8): DB, migration compatibility, storage round-trip,
+    worker heartbeat age, provider availability.
+
+    Hard dependencies (DB, storage, migration mismatch) → 503 unready.
+    Soft signals (stale/no worker, no providers, unstamped dev DB) →
+    200 degraded: the API can still serve reads and accept jobs.
+    """
+    from datetime import timezone
+
+    from sqlalchemy import select, text
+
+    from db.base import utcnow as _utcnow
+    from db.models import WorkerHeartbeat
+
+    checks = {}
+    unready = False
+    degraded = False
+
+    # Database.
+    try:
+        g.db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception:
+        checks["database"] = "unreachable"
+        unready = True
+
+    # Migration compatibility: a WRONGLY-stamped database is unready; an
+    # unstamped one (create_all dev/test DB) is merely degraded.
+    if checks["database"] == "ok":
+        try:
+            stamped = g.db.execute(
+                text("SELECT version_num FROM alembic_version")).scalar()
+        except Exception:
+            stamped = None
+        try:
+            from alembic.config import Config as _AlembicConfig
+            from alembic.script import ScriptDirectory
+            _base = os.path.dirname(os.path.abspath(__file__))
+            _cfg = _AlembicConfig(os.path.join(_base, "alembic.ini"))
+            _cfg.set_main_option("script_location", os.path.join(_base, "migrations"))
+            head = ScriptDirectory.from_config(_cfg).get_current_head()
+        except Exception:
+            head = None
+        if stamped is None:
+            checks["migrations"] = "unstamped"
+            degraded = True
+        elif head is None:
+            checks["migrations"] = "unknown"
+            degraded = True
+        elif stamped == head:
+            checks["migrations"] = "ok"
+        else:
+            checks["migrations"] = f"mismatch:{stamped}!={head}"
+            unready = True
+
+    # Storage round-trip.
+    try:
+        storage = get_storage()
+        probe_key = "ops/readiness-probe.bin"
+        storage.put_bytes(probe_key, b"ok", content_type="application/octet-stream")
+        checks["storage"] = "ok" if storage.get_bytes(probe_key) == b"ok" else "corrupt"
+        if checks["storage"] != "ok":
+            unready = True
+    except Exception:
+        checks["storage"] = "unreachable"
+        unready = True
+
+    # Worker heartbeat age (soft): a stale or absent worker degrades but the
+    # API stays ready — jobs queue durably until a worker returns.
+    if checks["database"] == "ok":
+        try:
+            latest = g.db.execute(
+                select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen.desc())
+            ).scalars().first()
+            if latest is None:
+                checks["workers"] = "none"
+                degraded = True
+            else:
+                seen = latest.last_seen
+                if seen.tzinfo is None:
+                    seen = seen.replace(tzinfo=timezone.utc)
+                age_s = int((_utcnow() - seen).total_seconds())
+                if age_s > 90:
+                    checks["workers"] = "stale"
+                    checks["worker_age_s"] = age_s
+                    degraded = True
+                else:
+                    checks["workers"] = "ok"
+                    checks["worker_age_s"] = age_s
+        except Exception:
+            checks["workers"] = "unknown"
+            degraded = True
+
+    # Provider availability (soft): an outage degrades, never crashes.
+    try:
+        available = [p["name"] for p in registry.describe_all()
+                     if (lambda prov: prov and prov.is_available())(registry.get(p.get("name", "")))]
+        checks["providers"] = "ok" if available else "none_available"
+        checks["providers_available"] = available
+        if not available:
+            degraded = True
+    except Exception:
+        checks["providers"] = "error"
+        degraded = True
+
+    status = "unready" if unready else ("degraded" if degraded else "ready")
+    return jsonify({"status": status, "checks": checks}), (503 if unready else 200)
+
+
 @app.route("/api/ops/pipeline", methods=["GET"])
 @require_auth
 def ops_pipeline():
