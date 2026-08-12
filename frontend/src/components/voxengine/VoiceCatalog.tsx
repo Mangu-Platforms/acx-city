@@ -314,7 +314,7 @@ export const VoiceCatalog: React.FC<VoiceCatalogProps> = ({ onSelect, selectedVo
         } else {
           // Fetch on-demand synthesis via axios (includes auth token)
           const res = await api.get(`/voices/${voice.id}/sample`, { responseType: 'blob' });
-          const blob = res.data instanceof Blob ? res.data : await res.data.arrayBuffer().then(ab => new Blob([ab], { type: 'audio/mpeg' }));
+          const blob = res.data instanceof Blob ? res.data : await res.data.arrayBuffer().then((ab: ArrayBuffer) => new Blob([ab], { type: 'audio/mpeg' }));
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           audioRef.current = audio;
