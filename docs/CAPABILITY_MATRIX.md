@@ -28,7 +28,7 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Character detection | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `api/voxengine.py:46-69`; `test_e2e_voxengine.py::test_character_lifecycle` |
 | Character voice assignment | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `api/voxengine.py:72-123`; `test_e2e_voxengine.py::test_character_update` |
 | Pronunciation lexicon | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `api/voxengine.py:127-241`; `test_e2e_voxengine.py::test_lexicon_lifecycle` |
-| Multi-agent pipeline | Partial | `/api` | Flag-gated | Partial | No | Yes | **No** | `PIPELINE_ENABLED` default `false`; `test_e2e_voxengine.py::test_pipeline_status` |
+| Multi-agent pipeline | Partial | `/api` | Flag-gated | Partial | No | Yes | **No** | P1.2: typed fallbacks per stage, degradation surfaced (`test_pipeline_convergence.py`); Celery fabric deleted — runs inside worker only. Still flag-gated default off |
 | Voice preview | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `test_voice_sample_synthesized_on_demand` asserts the sample decodes, is non-silent, and is deterministic (P1.0) |
 | Chapter streaming | Partial | Yes | Yes | Yes | n/a | Partial | **No** | Streaming E2E serves stubbed chapter bytes; preview E2E asserts patched provider bytes verbatim. Re-earn in P1.4 |
 | Waveform | Partial | Yes | Yes | No | n/a | Partial | **No** | E2E ran over stubbed audio; also Durable=No — the previous Ship=Yes violated the all-Yes rule outright |
@@ -52,3 +52,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P0.8** | Golden-path E2E test in CI | ⚠️ Re-done 2026-08-12 | Original gate unmet: no decodability assertion existed and CI never ran (billing lock). Honest gate landed with P1.0 |
 | **P1.0** | FakeSpeechProvider emits real decodable audio; live decodability assertion in the golden path; matrix re-audit | ✅ Complete | 2026-08-12 |
 | **P1.1** | Media validation before QC (validate → upload → verify → done ordering), cache-hit validation + eviction, `qc_policy_version`, paid fake twin | ✅ Complete | 2026-08-12 |
+| **P1.2** | Pipeline convergence: typed fallbacks, explicit stage checks, degradation surfaced; Celery/Redis task fabric deleted | ✅ Complete | 2026-08-12 |

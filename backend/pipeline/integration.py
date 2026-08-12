@@ -75,60 +75,118 @@ def preprocess_chapter_pipeline(
     session.add(trace)
     session.flush()
 
+    from pipeline.agents.base import fallback_result
+
+    degraded_stages: list[str] = []
+
+    def _basic_fallback(stage: str, error: str | None, error_code: str | None):
+        """Required stage failed: surface it, then degrade to TextProcessor."""
+        trace.status = "failed"
+        trace.error = f"{stage}: {error}"
+        session.commit()
+        logger.warning(
+            "Pipeline degraded to basic preprocessing for chapter %s "
+            "(stage=%s error_code=%s): %s",
+            chapter_number, stage, error_code, error,
+        )
+        from services.text_processor import TextProcessor
+        return TextProcessor().preprocess_text(chapter_text), {
+            "pipeline": False,
+            "degraded_stages": degraded_stages + [stage],
+            "error": error,
+            "error_code": error_code,
+        }
+
     try:
-        # Agent 1: Structure Parser
+        # Agent 1: Structure Parser — REQUIRED. Without structure there is
+        # nothing for later stages to consume.
         agent1 = StructureParser()
         r1 = agent1.timed_run({"text": chapter_text}, context)
         trace.agent1_ms = r1.duration_ms
         if not r1.success:
-            trace.status = "failed"
-            trace.error = f"Agent 1: {r1.error}"
-            session.commit()
-            return chapter_text, {"pipeline": False, "error": r1.error}
+            return _basic_fallback("structure_parser", r1.error, r1.error_code)
 
         trace.current_agent = "character_attribution"
         session.flush()
 
-        # Agent 2: Character Attribution
+        # Agent 2: Character Attribution — OPTIONAL. Failure means we keep
+        # the structure parser's chapters and the context's character list:
+        # a typed fallback, never a different object type.
         agent2 = CharacterAttribution()
         r2 = agent2.timed_run({"chapters": r1.data["chapters"]}, context)
+        if not r2.success:
+            r2 = fallback_result(
+                "character_attribution", r2.error or "failed",
+                fallback_data={
+                    "chapters": r1.data["chapters"],
+                    "characters": context.get("characters", []),
+                },
+                duration_ms=r2.duration_ms,
+                error_code=r2.error_code or "agent_failed",
+            )
+            degraded_stages.append("character_attribution")
         trace.agent2_ms = r2.duration_ms
         trace.agent2_cost_usd = r2.cost_usd
-        chapters = r2.data.get("chapters", r1.data["chapters"])
-        context["characters"] = r2.data.get("characters", [])
+        chapters = r2.effective_data.get("chapters", r1.data["chapters"])
+        context["characters"] = r2.effective_data.get(
+            "characters", context.get("characters", []))
 
         trace.current_agent = "text_normalizer"
         session.flush()
 
-        # Agent 3: Text Normalizer
+        # Agent 3: Text Normalizer — REQUIRED. Unnormalized text produces
+        # wrong pronunciations; do not pretend it succeeded.
         agent3 = TextNormalizer()
         r3 = agent3.timed_run({"chapters": chapters}, context)
         trace.agent3_ms = r3.duration_ms
         trace.agent3_cost_usd = r3.cost_usd
+        if not r3.success:
+            return _basic_fallback("text_normalizer", r3.error, r3.error_code)
         chapters = r3.data["chapters"]
 
         trace.current_agent = "prosody_planner"
         session.flush()
 
-        # Agent 4: Prosody Planner
+        # Agent 4: Prosody Planner — OPTIONAL. Failure means untagged (but
+        # normalized) text continues downstream.
         agent4 = ProsodyPlanner()
         r4 = agent4.timed_run({"chapters": chapters}, context)
+        if not r4.success:
+            r4 = fallback_result(
+                "prosody_planner", r4.error or "failed",
+                fallback_data={"chapters": chapters},
+                duration_ms=r4.duration_ms,
+                error_code=r4.error_code or "agent_failed",
+            )
+            degraded_stages.append("prosody_planner")
         trace.agent4_ms = r4.duration_ms
         trace.agent4_cost_usd = r4.cost_usd
-        chapters = r4.data.get("chapters", chapters)
+        chapters = r4.effective_data.get("chapters", chapters)
 
         trace.current_agent = "qa_validator"
         session.flush()
 
-        # Agent 5: QA Validator
+        # Agent 5: QA Validator — OPTIONAL for text flow (its failure must
+        # not lose the normalized text), but its absence is surfaced and
+        # qa_passed is False, never silently True.
         agent5 = QAValidator()
         context["original_chapters"] = r1.data["chapters"]
         r5 = agent5.timed_run({"chapters": chapters}, context)
+        if not r5.success:
+            r5 = fallback_result(
+                "qa_validator", r5.error or "failed",
+                fallback_data={"chapters": chapters, "qa_passed": False,
+                               "issues": [f"qa_validator failed: {r5.error}"],
+                               "completeness_score": 0.0},
+                duration_ms=r5.duration_ms,
+                error_code=r5.error_code or "agent_failed",
+            )
+            degraded_stages.append("qa_validator")
         trace.agent5_ms = r5.duration_ms
         trace.agent5_cost_usd = r5.cost_usd
 
         # Extract tagged text
-        final_chapters = r5.data.get("chapters", chapters)
+        final_chapters = r5.effective_data.get("chapters", chapters)
         tagged_paragraphs = []
         for ch in final_chapters:
             for scene in ch.get("scenes", []):
@@ -140,10 +198,13 @@ def preprocess_chapter_pipeline(
         # Update trace
         trace.characters_in = r1.characters_in
         trace.characters_out = len(tagged_text)
-        trace.qa_passed = r5.data.get("qa_passed", False)
-        trace.qa_issues = r5.data.get("issues", [])
-        trace.qa_completeness_score = r5.data.get("completeness_score", 0.0)
-        trace.status = "completed"
+        trace.qa_passed = r5.effective_data.get("qa_passed", False)
+        trace.qa_issues = r5.effective_data.get("issues", [])
+        trace.qa_completeness_score = r5.effective_data.get("completeness_score", 0.0)
+        trace.status = "completed_degraded" if degraded_stages else "completed"
+        trace.error = (
+            "; ".join(f"{s} fell back" for s in degraded_stages) or None
+        )
         trace.current_agent = None
         session.commit()
 
@@ -152,7 +213,8 @@ def preprocess_chapter_pipeline(
 
         logger.info(
             f"Pipeline: chapter {chapter_number} done in {total_ms}ms "
-            f"(qa={trace.qa_passed}, cost=${total_cost:.4f})"
+            f"(qa={trace.qa_passed}, cost=${total_cost:.4f}, "
+            f"degraded={degraded_stages or 'none'})"
         )
 
         metadata = {
@@ -164,19 +226,26 @@ def preprocess_chapter_pipeline(
             "total_duration_ms": total_ms,
             "characters": context.get("characters", []),
             "suggested_lexicon": r3.data.get("suggested_lexicon", []),
+            "degraded_stages": degraded_stages,
+            "fallback_used": bool(degraded_stages),
         }
 
         return tagged_text, metadata
 
     except Exception as exc:
+        # Last-resort guard. With every stage explicitly checked above this
+        # should not fire; if it does, the degradation is still surfaced.
         trace.status = "failed"
         trace.error = str(exc)
         session.commit()
         logger.exception(f"Pipeline failed for chapter {chapter_number}")
-        # Fall back to basic preprocessing
         from services.text_processor import TextProcessor
-        text_proc = TextProcessor()
-        return text_proc.preprocess_text(chapter_text), {"pipeline": False, "error": str(exc)}
+        return TextProcessor().preprocess_text(chapter_text), {
+            "pipeline": False,
+            "degraded_stages": degraded_stages,
+            "error": str(exc),
+            "error_code": "unexpected_exception",
+        }
 
 
 def _load_context(session: Session, job_id: str) -> dict[str, Any]:

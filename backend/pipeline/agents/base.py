@@ -11,7 +11,13 @@ logger = logging.getLogger("acx.pipeline")
 
 @dataclass
 class AgentResult:
-    """Standardized output from each pipeline agent."""
+    """Standardized output from each pipeline stage (P1.2 contract).
+
+    Every stage returns this exact type, success or failure. A failed
+    OPTIONAL stage never changes object type: it returns success=False with
+    fallback_used=True and deterministic fallback_data that downstream
+    stages consume in place of data.
+    """
     agent_name: str
     success: bool
     data: dict[str, Any]
@@ -20,7 +26,34 @@ class AgentResult:
     characters_in: int = 0
     characters_out: int = 0
     error: Optional[str] = None
+    error_code: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
+    fallback_used: bool = False
+    fallback_data: Optional[dict[str, Any]] = None
+
+    @property
+    def effective_data(self) -> dict[str, Any]:
+        """What downstream stages should consume: data on success, the
+        deterministic fallback on failure (empty dict as last resort)."""
+        if self.success:
+            return self.data
+        return self.fallback_data if self.fallback_data is not None else {}
+
+
+def fallback_result(agent_name: str, error: str, fallback_data: dict[str, Any],
+                    duration_ms: int = 0, error_code: str = "agent_failed") -> AgentResult:
+    """Typed fallback for a failed optional stage — same shape, never a
+    different object type, with deterministic downstream data."""
+    return AgentResult(
+        agent_name=agent_name,
+        success=False,
+        data={},
+        duration_ms=duration_ms,
+        error=error,
+        error_code=error_code,
+        fallback_used=True,
+        fallback_data=fallback_data,
+    )
 
 
 class BaseAgent:
@@ -48,4 +81,5 @@ class BaseAgent:
                 data={},
                 duration_ms=duration_ms,
                 error=str(exc),
+                error_code="exception",
             )

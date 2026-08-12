@@ -142,6 +142,18 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
   reached production unverified. Pausing auto-deploy is the user's call; not
   a blocker for the remediation program.
 
+## 2026-08-12 (P1.2 session)
+
+- **Another P0.3 leftover: `k8s/base.yaml` still deployed `v1-api`**
+  (Deployment + Service + HPA + an ingress `/v1` route pointing at it) — my
+  own earlier sweep missed it because a `head -5` truncated the grep. Removed
+  in P1.2 along with the Celery `pipeline-worker` Deployment/Service and the
+  Redis-based KEDA ScaledObject.
+- **Redis is now possibly vestigial.** After deleting the Celery fabric,
+  the only code touching `REDIS_URL` is the optional ping in
+  `healthcheck.py`. The compose `redis` service and `REDIS_URL` envs remain;
+  P1.8 (health rewrite) should decide whether Redis stays or goes.
+
 ### Open items (need user action or a later phase)
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`

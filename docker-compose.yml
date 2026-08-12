@@ -73,29 +73,6 @@ services:
       backend:
         condition: service_started  # ensures migrations have started
 
-  pipeline-worker:
-    build: ./backend
-    env_file:
-      - .env
-    environment:
-      ROLE: pipeline
-      DATABASE_URL: postgresql+psycopg://audiobook:${POSTGRES_PASSWORD:-audiobook}@db:5432/audiobook
-      REDIS_URL: redis://redis:6379/0
-      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-http://host.docker.internal:11434}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
-      STORAGE_LOCAL_ROOT: /data/storage
-    command: ["celery", "-A", "pipeline.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
-    volumes:
-      - audiobook-data:/data
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_started
-
   frontend:
     build: ./frontend
     ports:
