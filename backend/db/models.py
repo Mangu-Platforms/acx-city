@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -238,7 +239,56 @@ class ChapterResult(Base):
     content_type: Mapped[Optional[str]] = mapped_column(String(100))
     synthesis_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
+    # Active revision pointer (P1.5). Plain GUID, not a ForeignKey: the
+    # chapter↔revision FK cycle is not worth the migration gymnastics, and
+    # revisions are only ever addressed through their chapter.
+    active_revision_id: Mapped[Optional[str]] = mapped_column(GUID)
+
     job: Mapped["Job"] = relationship(back_populates="chapters")
+    revisions: Mapped[List["ChapterRevision"]] = relationship(
+        back_populates="chapter", cascade="all, delete-orphan",
+        order_by="ChapterRevision.revision_number",
+    )
+
+
+class ChapterRevision(Base):
+    """Immutable audio revision for a chapter (P1.5).
+
+    Every successful synthesis of a chapter produces one revision carrying
+    the exact source text that was spoken, the durable artifact pointers, a
+    deterministic synthesis_id (content hash of provider/voice/engine/text),
+    and the QC verdict under the policy version it was judged by. The
+    previous revision stays ``active`` until its replacement passes QC and
+    upload-verify — prior audio remains playable throughout a rerender.
+    source_text per revision is also what makes EPUB export from a job
+    possible (P1.6).
+    """
+    __tablename__ = "chapter_revisions"
+    __table_args__ = (
+        UniqueConstraint("chapter_result_id", "revision_number",
+                         name="uq_chapter_revision_number"),
+        Index("ix_chapter_revisions_chapter", "chapter_result_id"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID, primary_key=True, default=new_uuid)
+    chapter_result_id: Mapped[str] = mapped_column(
+        GUID, ForeignKey("chapter_results.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    audio_key: Mapped[Optional[str]] = mapped_column(String(512))
+    audio_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    audio_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    content_type: Mapped[Optional[str]] = mapped_column(String(100))
+    synthesis_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    qc_result: Mapped[Optional[dict]] = mapped_column(JSON)
+    qc_policy_version: Mapped[Optional[str]] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+    chapter: Mapped["ChapterResult"] = relationship(back_populates="revisions")
 
 
 class JobAttempt(Base):

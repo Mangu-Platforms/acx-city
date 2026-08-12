@@ -157,9 +157,6 @@ def create_streaming_blueprint(
             if job is None or job.organization_id != identity.org.id:
                 return jsonify({"error": "Job not found"}), 404
 
-            if job.status != JobStatus.succeeded:
-                return jsonify({"error": "Job is not completed yet"}), 409
-
             ch_row = session.execute(
                 select(ChapterResult).where(
                     ChapterResult.job_id == job_id,
@@ -167,25 +164,31 @@ def create_streaming_blueprint(
                 )
             ).scalar_one_or_none()
 
-            if ch_row is None:
-                return jsonify({"error": "Chapter not found"}), 404
+            audio_key = ch_row.audio_key if ch_row is not None else None
+            ch_status = ch_row.status if ch_row is not None else None
+            job_status = job.status
 
-            if ch_row.status != ChapterStatus.done:
-                return jsonify({"error": "Chapter not ready"}), 409
+        # A durable artifact serves unconditionally: during a rerender
+        # (P1.5) the row keeps its previous audio_key until the replacement
+        # passes QC, so prior audio stays playable throughout.
+        if audio_key:
+            storage = get_storage()
+            # No download_name: the artifact server serves inline
+            # (streamable) and honours Range; downloads are the attachment
+            # path.
+            signed = storage.signed_url(audio_key, expires_in=3600)
+            return redirect(signed.url, code=302)
 
-            audio_key = ch_row.audio_key
-
-        if not audio_key:
-            return jsonify({
-                "error": "Chapter has no durable audio artifact",
-                "hint": "Re-run the job; chapters are uploaded to storage on completion",
-            }), 409
-
-        storage = get_storage()
-        # No download_name: the artifact server serves inline (streamable)
-        # and honours Range; the download endpoint is the attachment path.
-        signed = storage.signed_url(audio_key, expires_in=3600)
-        return redirect(signed.url, code=302)
+        if job_status != JobStatus.succeeded:
+            return jsonify({"error": "Job is not completed yet"}), 409
+        if ch_row is None:
+            return jsonify({"error": "Chapter not found"}), 404
+        if ch_status != ChapterStatus.done:
+            return jsonify({"error": "Chapter not ready"}), 409
+        return jsonify({
+            "error": "Chapter has no durable audio artifact",
+            "hint": "Re-run the job; chapters are uploaded to storage on completion",
+        }), 409
 
     # -- instant preview ----------------------------------------------------
 

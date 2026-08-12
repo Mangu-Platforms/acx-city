@@ -32,7 +32,7 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Voice preview | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `test_voice_sample_synthesized_on_demand` asserts the sample decodes, is non-silent, and is deterministic (P1.0) |
 | Chapter streaming | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | P1.4: audio_key-only resolution; real-audio E2E follows the signed redirect, decodes, and seeks via Range 206 (`test_stream_chapter_real_audio_with_ranges`); preview returns a signed URL to stored decodable audio |
 | Waveform | Partial | Yes | Yes | No | n/a | Partial | **No** | E2E ran over stubbed audio; also Durable=No — the previous Ship=Yes violated the all-Yes rule outright |
-| Single-chapter rerender | Partial | 503 | **No** | No | No | Yes | **No** | `api/voxengine.py:403-417`; `test_e2e_voxengine.py::test_rerender_not_implemented` |
+| Single-chapter rerender | Partial | Yes | Yes | Yes | Yes | Yes | **Yes** | P1.5: forced rerender creates a new revision without re-billing unchanged text; selective rerender re-synthesizes only content-changed chapters (`test_p15_revisions.py`); prior audio streams throughout |
 | Voice cloning | Yes | 201/GET/DELETE | Yes | Yes | n/a | Partial | **No** | Lifecycle E2E only (CRUD round-trip of arbitrary bytes); nothing synthesizes with a cloned voice. Gated behind a real provider pipeline (P2.1) |
 | EPUB export (from job) | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | `app.py:export_job_as_epub` (fixed ORM bugs); `test_e2e_epub_upload.py::test_export_job_as_epub` |
 | EPUB export (client-supplied) | Partial | Partial | Yes | Yes | n/a | Yes | **Yes** | `app.py:618`; 5 tests passing |
@@ -55,3 +55,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P1.2** | Pipeline convergence: typed fallbacks, explicit stage checks, degradation surfaced; Celery/Redis task fabric deleted | ✅ Complete | 2026-08-12 |
 | **P1.3** | Lexicon applied in default worker path; assignment + lexicon edits proven audible by checksum diff | ✅ Complete | 2026-08-12 |
 | **P1.4** | Preview → signed URL (sync, content-addressed); chapter streaming audio_key-only with Range support; async voice_preview deleted | ✅ Complete | 2026-08-12 |
+| **P1.5** | ChapterRevision history, content-aware resume (synthesis_id), selective + forced rerender, prior audio live throughout | ✅ Complete | 2026-08-12 |

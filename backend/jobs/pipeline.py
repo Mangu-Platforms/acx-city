@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from billing import mark_stage, record_usage, stage_done
 from db.base import utcnow
-from db.models import ChapterResult, ChapterStatus, Job
+from db.models import ChapterResult, ChapterRevision, ChapterStatus, Job
 from jobs.queue import LeaseLost  # re-export so callers import from one place
 from services.lexicon import apply_lexicon_plain, load_lexicon_entries
 from services.media_validation import (
@@ -178,7 +178,40 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
             raise JobCanceled()
 
         row = ch_rows[i]
-        if row.status == ChapterStatus.done:
+
+        # Preprocess FIRST (cheap): the current synthesis text determines the
+        # chapter's deterministic synthesis_id, and resume is content-aware
+        # (P1.5) — a lexicon or text edit invalidates only the chapters whose
+        # spoken text actually changed.
+        pipeline_meta = {}
+        if pipeline_enabled():
+            clean, pipeline_meta = preprocess_chapter_pipeline(
+                session, job.id, i, chapter["text"], chapter["title"]
+            )
+        else:
+            clean = _text.preprocess_text(chapter["text"])
+            # P1.3: the default path applies the project lexicon as plain
+            # phonetic replacement — an edit changes the synthesis text, so
+            # it changes the cache key, so it changes the audio.
+            lexicon_entries = load_lexicon_entries(session, job.project_id)
+            if lexicon_entries:
+                clean = apply_lexicon_plain(clean, lexicon_entries)
+        if not clean:
+            if row.status != ChapterStatus.done:
+                row.status = ChapterStatus.skipped
+                session.commit()
+            continue
+
+        sid_source = f"{job.provider}:{job.voice_id}:{job.engine}:{clean}"
+        if voice_snapshot is not None:
+            sid_source += f":{voice_snapshot.fingerprint}"
+        expected_sid = hashlib.sha256(sid_source.encode()).hexdigest()
+
+        # Content-aware resume: reuse the durable artifact only when the
+        # chapter's current synthesis text still matches what was rendered.
+        # Legacy rows (no synthesis_id recorded) resume unconditionally.
+        content_matches = row.synthesis_id is None or row.synthesis_id == expected_sid
+        if row.status == ChapterStatus.done and content_matches:
             # Resume: prefer durable storage copy (survives container replacement).
             if row.audio_key and row.audio_sha256:
                 try:
@@ -209,29 +242,18 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                     "chapter %d local leftover failed media validation (%s); "
                     "re-synthesizing", i, check.reason,
                 )
+        elif row.status == ChapterStatus.done:
+            log.info(
+                "chapter %d synthesis text changed (rerender); re-synthesizing "
+                "while the previous revision stays live", i,
+            )
 
+        # NOTE: the row keeps its previous audio_key/active_revision while we
+        # re-synthesize — prior audio stays playable until the replacement
+        # passes validation, QC recording, and upload-verify.
         row.status = ChapterStatus.processing
         job.current_chapter = i + 1
         session.commit()
-
-        # Multi-agent pipeline preprocessing (when enabled)
-        pipeline_meta = {}
-        if pipeline_enabled():
-            clean, pipeline_meta = preprocess_chapter_pipeline(
-                session, job.id, i, chapter["text"], chapter["title"]
-            )
-        else:
-            clean = _text.preprocess_text(chapter["text"])
-            # P1.3: the default path applies the project lexicon as plain
-            # phonetic replacement — an edit changes the synthesis text, so
-            # it changes the cache key, so it changes the audio.
-            lexicon_entries = load_lexicon_entries(session, job.project_id)
-            if lexicon_entries:
-                clean = apply_lexicon_plain(clean, lexicon_entries)
-        if not clean:
-            row.status = ChapterStatus.skipped
-            session.commit()
-            continue
 
         render_tasks = []
         if voice_snapshot is not None:
@@ -414,6 +436,35 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
             session.commit()
             raise
         mark_stage(session, job.id, i, "upload")
+
+        # P1.5: record an immutable revision. The previous revision is
+        # superseded only NOW — after the replacement has passed media
+        # validation, QC recording, and upload-verify — so prior audio
+        # stayed live for streaming throughout the re-synthesis.
+        prev_rev = (
+            session.get(ChapterRevision, row.active_revision_id)
+            if row.active_revision_id else None
+        )
+        rev = ChapterRevision(
+            chapter_result_id=row.id,
+            revision_number=1 + max(
+                (r.revision_number for r in row.revisions), default=0),
+            source_text=clean,
+            audio_key=row.audio_key,
+            audio_sha256=row.audio_sha256,
+            audio_bytes=row.audio_bytes,
+            content_type=row.content_type,
+            synthesis_id=expected_sid,
+            qc_result=qc,
+            qc_policy_version=QC_POLICY_VERSION,
+            status="active",
+        )
+        session.add(rev)
+        session.flush()
+        if prev_rev is not None:
+            prev_rev.status = "superseded"
+        row.active_revision_id = rev.id
+        row.synthesis_id = expected_sid
 
         row.status = ChapterStatus.done
         chapter_files.append(chapter_path)

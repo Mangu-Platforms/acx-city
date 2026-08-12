@@ -301,7 +301,16 @@ def start_pipeline(project_id: str):
 @voxengine_bp.route("/chapters/<chapter_id>/rerender", methods=["POST"])
 @require_auth
 def rerender_chapter(chapter_id: str):
-    """Chapter rerender — requires Celery worker (P1.5). Not yet deployed."""
+    """Force a new revision for one chapter (P1.5).
+
+    Marks the chapter pending and requeues its job. Unchanged sibling
+    chapters resume from durable storage via their synthesis_id, so only
+    this chapter re-renders. Its prior audio stays live (audio_key and
+    active revision untouched) until the replacement passes QC.
+    """
+    from db.base import utcnow as _utcnow
+    from db.models import ChapterStatus, JobStatus
+
     identity = current_identity()
     chapter = g.db.get(ChapterResult, chapter_id)
     if not chapter:
@@ -309,10 +318,20 @@ def rerender_chapter(chapter_id: str):
     job = g.db.get(Job, chapter.job_id)
     if not job or job.organization_id != identity.org.id:
         return jsonify({"error": "Chapter not found"}), 404
+    if job.status not in (JobStatus.succeeded, JobStatus.needs_review, JobStatus.failed):
+        return jsonify({
+            "error": f"Job is {job.status.value}; wait for it to finish before rerendering",
+        }), 409
+    chapter.status = ChapterStatus.pending  # audio_key kept: prior audio stays live
+    job.status = JobStatus.queued
+    job.locked_by = None
+    job.available_at = _utcnow()
+    job.attempts = 0
+    job.error = None
+    g.db.commit()
     return jsonify({
-        "error": "Chapter rerender requires the Celery worker (P1.5, not yet deployed). "
-                 "Use the full job pipeline for now."
-    }), 503
+        "job_id": job.id, "chapter_index": chapter.index, "status": "queued",
+    }), 202
 
 
 @voxengine_bp.route("/chapters/<chapter_id>/waveform", methods=["GET"])

@@ -420,6 +420,32 @@ def cancel_job(job_id):
     return jsonify({"job_id": job.id, "status": job.status.value, "cancel_requested": True})
 
 
+@app.route("/api/jobs/<job_id>/rerender", methods=["POST"])
+@require_auth
+def rerender_job(job_id):
+    """Re-run a finished job, selectively by content (P1.5).
+
+    Only chapters whose current synthesis text (after lexicon/preprocess)
+    differs from their active revision re-synthesize; the rest resume from
+    durable storage without new provider spend. Prior audio stays live until
+    each replacement passes validation, QC, and upload-verify.
+    """
+    from db.base import utcnow as _utcnow
+
+    job = _get_owned_job(job_id)
+    if job.status not in (JobStatus.succeeded, JobStatus.needs_review, JobStatus.failed):
+        return jsonify({
+            "error": f"Job is {job.status.value}; rerender applies to finished jobs",
+        }), 409
+    job.status = JobStatus.queued
+    job.locked_by = None
+    job.available_at = _utcnow()
+    job.attempts = 0
+    job.error = None
+    g.db.commit()
+    return jsonify({"job_id": job.id, "status": "queued"}), 202
+
+
 @app.route("/api/jobs/<job_id>", methods=["DELETE"])
 @require_auth
 def delete_job(job_id):

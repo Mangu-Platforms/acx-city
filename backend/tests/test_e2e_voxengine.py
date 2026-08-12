@@ -303,16 +303,17 @@ def test_pipeline_status_and_trace_shapes(engine, api):
 # 5. Rerender: Celery-gated 503 and 404 on unknown chapter
 # --------------------------------------------------------------------------- #
 
-def test_rerender_is_celery_gated_503_and_404(engine, api):
+def test_rerender_state_gating_and_404(engine, api):
+    """Chapter rerender (P1.5) applies to finished jobs only; full 202 flow
+    is covered end-to-end in test_p15_revisions.py."""
     api.signup()
     project_id = _make_project(api.org_id, api.user_id)
     _job_id, chapter_id = _make_job_with_chapter(api.org_id, project_id, api.user_id)
 
+    # The seeded job is still queued -> 409, not a rerender.
     r = api.post(f"/api/chapters/{chapter_id}/rerender")
-    assert r.status_code == 503, r.get_json()
-    body = r.get_json()
-    assert set(body.keys()) == {"error"}
-    assert "Celery" in body["error"]
+    assert r.status_code == 409, r.get_json()
+    assert "queued" in r.get_json()["error"]
 
     # Nonexistent chapter -> 404
     r = api.post(f"/api/chapters/{uuid.uuid4()}/rerender")
