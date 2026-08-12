@@ -506,6 +506,48 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
     if not (job.output_mp3_key or job.output_m4b_key):
         raise RuntimeError("No output file could be produced")
 
+    # P1.6: ordered export manifest from the active-revision set, with input
+    # and output checksums. Deterministic content (sorted keys, no
+    # timestamps) so an unchanged re-export reproduces it byte-for-byte.
+    manifest_chapters = []
+    for m_row in sorted(job.chapters, key=lambda c: c.index):
+        if m_row.status != ChapterStatus.done:
+            continue
+        m_rev = (
+            session.get(ChapterRevision, m_row.active_revision_id)
+            if m_row.active_revision_id else None
+        )
+        manifest_chapters.append({
+            "index": m_row.index,
+            "title": m_row.title,
+            "revision_number": m_rev.revision_number if m_rev else None,
+            "synthesis_id": m_row.synthesis_id,
+            "audio_sha256": m_row.audio_sha256,
+            "source_text_sha256": (
+                hashlib.sha256(m_rev.source_text.encode("utf-8")).hexdigest()
+                if m_rev else None
+            ),
+            "qc_policy_version": m_rev.qc_policy_version if m_rev else None,
+        })
+    manifest_outputs = {}
+    for out_fmt, out_path in (("mp3", job.output_mp3), ("m4b", job.output_m4b)):
+        if out_path and os.path.exists(out_path):
+            with open(out_path, "rb") as fh:
+                manifest_outputs[out_fmt] = hashlib.sha256(fh.read()).hexdigest()
+    export_manifest = {
+        "job_id": job.id,
+        "provider": job.provider,
+        "voice_id": job.voice_id,
+        "engine": job.engine,
+        "chapters": manifest_chapters,
+        "outputs": manifest_outputs,
+    }
+    storage.put_bytes(
+        _output_key(job, "manifest.json"),
+        json.dumps(export_manifest, sort_keys=True, indent=2).encode("utf-8"),
+        content_type="application/json",
+    )
+
     if voice_snapshot is not None:
         manifest = production_manifest(voice_snapshot, job_id=job.id)
         manifest["direction_trace"] = direction_trace

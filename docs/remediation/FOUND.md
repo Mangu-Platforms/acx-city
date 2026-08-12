@@ -169,6 +169,17 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
   the tag consumer only exists in the flag-gated world. Logged, not fixed —
   the pipeline is flag-gated off.
 
+## 2026-08-12 (P1.6 session)
+
+- **EPUB-from-job now carries the SPOKEN text by design** (active revision
+  source_text: preprocessed, lexicon-applied). A reader sees "NWIN" where
+  the author wrote "Nguyen". That is the spec'd behavior (EPUB matches the
+  audiobook), but a reader-facing "original text" EPUB variant may be wanted
+  later — product call, logged.
+- **Backend suite runtime is now ~8 minutes** (real-audio E2E across
+  P1.0–P1.6). Fine locally; when Actions unlocks, CI wall-clock will be
+  dominated by it. Splitting fast/slow markers is an easy later win.
+
 ### Open items (need user action or a later phase)
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`

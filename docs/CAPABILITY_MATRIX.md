@@ -34,7 +34,7 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Waveform | Partial | Yes | Yes | No | n/a | Partial | **No** | E2E ran over stubbed audio; also Durable=No — the previous Ship=Yes violated the all-Yes rule outright |
 | Single-chapter rerender | Partial | Yes | Yes | Yes | Yes | Yes | **Yes** | P1.5: forced rerender creates a new revision without re-billing unchanged text; selective rerender re-synthesizes only content-changed chapters (`test_p15_revisions.py`); prior audio streams throughout |
 | Voice cloning | Yes | 201/GET/DELETE | Yes | Yes | n/a | Partial | **No** | Lifecycle E2E only (CRUD round-trip of arbitrary bytes); nothing synthesizes with a cloned voice. Gated behind a real provider pipeline (P2.1) |
-| EPUB export (from job) | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | `app.py:export_job_as_epub` (fixed ORM bugs); `test_e2e_epub_upload.py::test_export_job_as_epub` |
+| EPUB export (from job) | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | P1.6: content from the active-revision set (exact spoken text, lexicon applied); `test_p16_exports.py` verifies chapter content + order in the produced EPUB |
 | EPUB export (client-supplied) | Partial | Partial | Yes | Yes | n/a | Yes | **Yes** | `app.py:618`; 5 tests passing |
 
 ## Phase tracker
@@ -56,3 +56,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P1.3** | Lexicon applied in default worker path; assignment + lexicon edits proven audible by checksum diff | ✅ Complete | 2026-08-12 |
 | **P1.4** | Preview → signed URL (sync, content-addressed); chapter streaming audio_key-only with Range support; async voice_preview deleted | ✅ Complete | 2026-08-12 |
 | **P1.5** | ChapterRevision history, content-aware resume (synthesis_id), selective + forced rerender, prior audio live throughout | ✅ Complete | 2026-08-12 |
+| **P1.6** | Exports build from the active-revision set; ordered manifest with input+output checksums, byte-reproducible; EPUB from revision source_text | ✅ Complete | 2026-08-12 |

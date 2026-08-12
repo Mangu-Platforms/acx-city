@@ -701,6 +701,19 @@ def generate_epub():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/jobs/<job_id>/manifest", methods=["GET"])
+@require_auth
+def job_manifest(job_id):
+    """Ordered export manifest (P1.6): the active-revision set with input
+    checksums, plus checksums of the exported artifacts."""
+    job = _get_owned_job(job_id)
+    key = f"org/{job.organization_id}/jobs/{job.id}/manifest.json"
+    storage = get_storage()
+    if not storage.exists(key):
+        return jsonify({"error": "No manifest; the job has not exported yet"}), 404
+    return app.response_class(storage.get_bytes(key), mimetype="application/json")
+
+
 @app.route("/api/jobs/<job_id>/export/epub", methods=["GET"])
 @require_auth
 def export_job_as_epub(job_id):
@@ -718,20 +731,29 @@ def export_job_as_epub(job_id):
         return jsonify({"error": "Missing project metadata"}), 400
     
     try:
-        # Re-split source text so each chapter has its body text.
+        # Legacy fallback only: re-split source text for chapters that
+        # predate the revision system.
         source = (job.project.source_text or "") if job.project else ""
         split_chapters = text_processor.split_by_chapters(source) if source else []
         split_by_idx = {i: ch for i, ch in enumerate(split_chapters)}
 
-        # Load chapters from job results
+        # P1.6: chapter content comes from the ACTIVE REVISION set — the
+        # exact text that was spoken (preprocessed, lexicon applied) — so the
+        # EPUB matches the audiobook even after edits or rerenders. Note this
+        # includes phonetic lexicon replacements by design (see FOUND.md).
+        from db.models import ChapterRevision
+
         chapters_data = []
         for result in sorted(job.chapters, key=lambda c: c.index):
-            if result.title:
-                split = split_by_idx.get(result.index, {})
-                chapters_data.append({
-                    "title": result.title,
-                    "content": split.get("text", ""),
-                })
+            if not result.title:
+                continue
+            content = ""
+            if result.active_revision_id:
+                rev = g.db.get(ChapterRevision, result.active_revision_id)
+                content = rev.source_text if rev else ""
+            if not content:
+                content = split_by_idx.get(result.index, {}).get("text", "")
+            chapters_data.append({"title": result.title, "content": content})
         
         if not chapters_data:
             return jsonify({"error": "No chapter content available"}), 404
