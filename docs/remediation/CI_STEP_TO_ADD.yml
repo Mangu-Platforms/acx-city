@@ -1,0 +1,18 @@
+# One CI step to add via the GitHub UI (avoids granting a workflow-scope PAT).
+#
+# File:   .github/workflows/ci.yml
+# Job:    backend
+# Where:  immediately AFTER the "Lint (ruff)" step,
+#         BEFORE "Verify migrations apply"
+#
+# Why it needs nothing else: the backend job already has Python 3.11,
+# `pip install -r requirements.txt`, JWT_SECRET and DATABASE_URL at job
+# level, working-directory: backend, and a full repo checkout — the script
+# resolves the repo root itself and checks
+# frontend/src/types/api.generated.ts against the Pydantic contracts,
+# exiting non-zero if the committed file is stale.
+#
+# Paste exactly (indentation matches the existing steps — 6 spaces to "-"):
+
+      - name: Verify generated TS types are current
+        run: python scripts/gen_ts_types.py --check

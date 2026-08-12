@@ -22,11 +22,15 @@ re-ran every exit gate against the current checkout.
 3. **`fastapi` still pinned in `backend/requirements.txt`.** Nothing has
    imported it since P0.3. Removed.
 
-### Deviations from the plan (code wins)
+### Spec errors (plan was wrong; code wins)
 
-- P0.3 said to remove `uvicorn` as well — kept. `backend/mcp_server.py`
-  (MCP operator server, added after the plan was written) imports it lazily
-  in `main()`. The requirements comment now documents this.
+- **P0.3 said to remove `uvicorn` — spec error, confirmed by the author
+  2026-08-12.** `backend/mcp_server.py` (MCP operator server, added after the
+  plan was written) imports it lazily in `main()`. Kept; the requirements
+  comment documents this.
+
+### Deviations from the plan
+
 - The plan's named tests (`test_chapter_audio_survives_local_disk_wipe`,
   `test_lease_renewal_independent_of_chapter_progress`,
   `test_worker_a_cannot_cancel_job_claimed_by_worker_b`) were implemented
@@ -39,10 +43,11 @@ re-ran every exit gate against the current checkout.
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`
    is not in `.github/workflows/ci.yml` — the local change could not be pushed
-   because the GitHub OAuth token lacks `workflow` scope. Needs a PAT with
-   `workflow` scope or a manual edit in the GitHub UI. Until then, drift
-   between contracts and `api.generated.ts` will not fail CI (verified in
-   sync as of 2026-08-12).
+   because the GitHub OAuth token lacks `workflow` scope. Resolution chosen
+   2026-08-12: no PAT; the exact step to paste via the GitHub UI is in
+   `CI_STEP_TO_ADD.yml` (backend job, after "Lint (ruff)"). Until pasted,
+   drift between contracts and `api.generated.ts` will not fail CI (verified
+   in sync as of 2026-08-12).
 2. **Branch protection** (P0.1 manual step) — set in the GitHub UI; cannot be
    verified from the working copy.
 3. **P0.5 chaos gate not automated.** "kill -9 at 20+ random points" exists as
@@ -51,3 +56,11 @@ re-ran every exit gate against the current checkout.
 4. **EPUB test warning.** `UserWarning: Duplicate name: 'EPUB/cover.xhtml'`
    during EPUB tests — the generator writes a duplicate zip entry. Harmless
    but worth a look in a later EPUB pass.
+5. **Dependabot: 70 open vulnerabilities** (1 critical, 29 high, 36 moderate,
+   4 low) reported on push 2026-08-12. Security audit is explicitly out of
+   remediation scope (ground rules); needs its own pass.
+6. **State-verification note (2026-08-12).** An independent clone reportedly
+   showed the pre-remediation tree (v1_api present, red builds) on the same
+   day that `git ls-remote` returned `main = 2c817cc` (post-remediation).
+   The remote was verified live from this machine; the conflicting clone was
+   most likely a fork or a stale local copy. Unresolved which.
