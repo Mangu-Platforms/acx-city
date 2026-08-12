@@ -297,9 +297,15 @@ def test_voice_sample_synthesized_on_demand(engine, api):
     r = api.get(f"/api/voices/{ids['a']}/sample")
     assert r.status_code == 200
     assert r.mimetype == "audio/mpeg"
-    assert r.data.startswith(b"ID3fake")
-    # FakeSpeechProvider output is b"ID3fake" + 16 digest bytes — nothing else.
-    assert len(r.data) == len(b"ID3fake") + 16
+    # FakeSpeechProvider emits real, decodable MP3 audio (P1.0).
+    import io
+    from pydub import AudioSegment
+    seg = AudioSegment.from_file(io.BytesIO(r.data), format="mp3")
+    assert len(seg) > 0, "sample audio must decode to non-zero duration"
+    assert seg.dBFS > -45, "sample audio must not be silent"
+    # Deterministic: an identical request returns byte-identical audio.
+    r2 = api.get(f"/api/voices/{ids['a']}/sample")
+    assert r2.data == r.data
     assert r.headers["Cache-Control"] == "public, max-age=86400"
 
 

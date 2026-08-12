@@ -1,14 +1,25 @@
-"""Golden-path end-to-end test (P0.8).
+"""Golden-path end-to-end tests (P0.8).
 
-Exercises the full HTTP API surface with a real DB and the FakeSpeechProvider:
+Exercise the full HTTP API surface with a real DB and the FakeSpeechProvider:
   signup → upload text → synthesize → poll to success → download URL
 
-No ffmpeg, no network, no AWS credentials required. Uses:
-  - FakeSpeechProvider (provider="fake") for deterministic offline synthesis
-  - stub_pipeline fixture for audio assembly stubs
-  - Flask test client for HTTP calls
-  - Real SQLAlchemy sessions (SQLite in CI, Postgres when DATABASE_URL is set)
+Two tiers:
+  - Stubbed tests (stub_pipeline fixture): fast state-machine coverage; audio
+    assembly/QC are monkeypatched and artifact bytes are NOT real audio.
+  - test_golden_path_real_audio_decodable: the honest P0.8 gate. No audio
+    stubs — FakeSpeechProvider emits real MP3 sine tones (P1.0), assembly/QC/
+    export run for real, and the exported artifacts must decode via ffprobe
+    with plausible durations and correct chapter count/order. Requires ffmpeg
+    and ffprobe on PATH (CI installs them; production images ship them).
+
+No network, no AWS credentials required in either tier.
 """
+import hashlib
+import io
+import json
+import shutil
+import subprocess
+
 import pytest
 
 from db.session import session_scope
@@ -93,6 +104,105 @@ def test_golden_path_signup_synthesize_download(engine, stub_pipeline, api):
     dl_body = r.get_json()
     assert "url" in dl_body
     assert dl_body["url"]  # non-empty
+
+
+def _ffprobe(path):
+    """Return ffprobe's parsed JSON (format + chapters) for a media file."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_format", "-show_chapters", str(path)],
+        capture_output=True, check=True, timeout=60,
+    )
+    return json.loads(out.stdout)
+
+
+def test_golden_path_real_audio_decodable(engine, api, tmp_path):
+    """The honest P0.8 gate: no audio stubs, decodability asserted live.
+
+    upload → job → real synthesis (fake provider, real MP3) → real merge/QC →
+    real MP3+M4B export → signed URL → download through the API → ffprobe.
+    """
+    assert shutil.which("ffmpeg") and shutil.which("ffprobe"), (
+        "ffmpeg/ffprobe are required for the golden path (CI installs them)"
+    )
+    from pydub import AudioSegment
+    from utils.audio_utils import CHARS_PER_SECOND
+    from storage import get_storage
+    from db.models import Job
+
+    api.signup("real-audio@example.com")
+    r = api.post("/api/synthesize", json={
+        "text": BOOK_TEXT,
+        "provider": "fake",
+        "voice_id": "fake-a",
+        "engine": "neural",
+        "formats": ["mp3", "m4b"],
+        "title": "Real Audio E2E",
+        "author": "Test Author",
+    })
+    assert r.status_code == 200, r.get_json()
+    job_id = r.get_json()["task_id"]
+
+    from worker import process_one
+    assert process_one(worker_id="e2e-real-worker"), "worker found no job"
+
+    r = api.get(f"/api/task/{job_id}")
+    assert r.status_code == 200, r.get_json()
+    body = r.get_json()
+    assert body["status"] == "succeeded", (
+        f"unexpected status: {body.get('status')} error={body.get('error')}"
+    )
+    assert body["progress"] == 100
+    assert body["chapters_count"] == 2
+
+    storage = get_storage()
+    with session_scope() as s:
+        job = s.get(Job, job_id)
+        rows = sorted(job.chapters, key=lambda c: c.index)
+        assert [c.index for c in rows] == [0, 1], "chapter order must match input"
+        titles = [c.title for c in rows]
+        assert all(titles), f"chapter titles must be non-empty: {titles}"
+        # Every chapter has a durable, checksummed, decodable, non-silent artifact.
+        for c in rows:
+            assert c.audio_key, f"chapter {c.index} missing audio_key"
+            audio = storage.get_bytes(c.audio_key)
+            assert hashlib.sha256(audio).hexdigest() == c.audio_sha256
+            seg = AudioSegment.from_file(io.BytesIO(audio), format="mp3")
+            assert len(seg) > 500, f"chapter {c.index} audio too short to be real"
+            assert seg.dBFS > -45, f"chapter {c.index} audio is silent"
+        mp3_key, m4b_key = job.output_mp3_key, job.output_m4b_key
+    assert mp3_key and m4b_key, "both export formats must be produced"
+
+    # Download the MP3 through the signed URL the API hands out — full loop.
+    r = api.get(f"/api/download/{job_id}?format=mp3")
+    assert r.status_code == 200, r.get_json()
+    url = r.get_json()["url"]
+    assert url
+    path_and_query = url.split("://", 1)[-1].split("/", 1)[1]
+    dl = api.get("/" + path_and_query)
+    assert dl.status_code == 200, f"signed URL fetch failed: {dl.status_code}"
+    mp3_file = tmp_path / "book.mp3"
+    mp3_file.write_bytes(dl.data)
+
+    # The exported artifact decodes via ffprobe with a plausible duration.
+    probe = _ffprobe(mp3_file)
+    assert "mp3" in probe["format"]["format_name"]
+    duration = float(probe["format"]["duration"])
+    expected = len(BOOK_TEXT) / CHARS_PER_SECOND
+    assert 0.5 * expected < duration < 2.0 * expected + 10, (
+        f"duration {duration:.1f}s implausible for {len(BOOK_TEXT)} chars "
+        f"(expected ≈{expected:.1f}s)"
+    )
+
+    # M4B: decodes, and carries exactly the chapters, in order.
+    m4b_file = tmp_path / "book.m4b"
+    m4b_file.write_bytes(storage.get_bytes(m4b_key))
+    probe = _ffprobe(m4b_file)
+    assert any(f in probe["format"]["format_name"] for f in ("mp4", "m4a", "mov"))
+    chapters = probe.get("chapters", [])
+    assert len(chapters) == 2, f"m4b must carry 2 chapters, got {len(chapters)}"
+    starts = [float(c["start_time"]) for c in chapters]
+    assert starts == sorted(starts), "m4b chapters out of order"
 
 
 def test_golden_path_job_list_is_org_scoped(engine, stub_pipeline, api):

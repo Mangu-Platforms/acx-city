@@ -22,6 +22,11 @@ _LOUDNESS_WARN_DBFS = -45
 # ACX-compatible normalization target (midpoint of -18 to -23 LUFS range).
 _NORMALIZE_TARGET_DBFS = -20.0
 
+# Spoken-English pacing: ~150 words/min ≈ 12.5 chars/sec. Single source of
+# truth for anything that maps character counts to audio durations (streaming
+# preview truncation, fake-provider duration law, duration-plausibility QC).
+CHARS_PER_SECOND = 12.5
+
 
 class AudioUtils:
     @staticmethod

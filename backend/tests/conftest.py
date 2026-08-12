@@ -10,21 +10,23 @@ import uuid
 
 import pytest
 
-
-@pytest.fixture(scope="session", autouse=True)
-def _env_defaults():
-    os.environ.setdefault("JWT_SECRET", "test-secret")
-    os.environ.setdefault("FLASK_ENV", "testing")
-    # Keep synthesis output/cache off the (read-restricted) mounted fs in sandbox.
-    tmp = tempfile.mkdtemp(prefix="ab_test_")
-    os.environ.setdefault("OUTPUT_FOLDER", os.path.join(tmp, "outputs"))
-    os.environ.setdefault("CACHE_FOLDER", os.path.join(tmp, "cache"))
-    os.environ.setdefault("UPLOAD_FOLDER", os.path.join(tmp, "uploads"))
-    # Storage: local backend rooted in the temp dir; signing secret pinned.
-    os.environ.setdefault("STORAGE_BACKEND", "local")
-    os.environ.setdefault("STORAGE_LOCAL_ROOT", os.path.join(tmp, "storage"))
-    os.environ.setdefault("STORAGE_SIGNING_SECRET", "test-signing-secret")
-    yield
+# Env defaults must be set at conftest IMPORT time, not in a fixture: several
+# application modules bind env-derived paths when first imported (e.g.
+# jobs.pipeline instantiates SynthesisCache(CACHE_FOLDER) at module level),
+# and pytest imports test modules during COLLECTION — before any fixture
+# runs. test_jobs.py imports `worker` at module top level, so with
+# fixture-time env the whole suite silently ran against the developer's real
+# backend/cache directory, where stale pre-P1.0 fake entries poisoned real
+# synthesis runs (see docs/remediation/FOUND.md, 2026-08-12).
+_TEST_TMP = tempfile.mkdtemp(prefix="ab_test_")
+os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ.setdefault("FLASK_ENV", "testing")
+os.environ.setdefault("OUTPUT_FOLDER", os.path.join(_TEST_TMP, "outputs"))
+os.environ.setdefault("CACHE_FOLDER", os.path.join(_TEST_TMP, "cache"))
+os.environ.setdefault("UPLOAD_FOLDER", os.path.join(_TEST_TMP, "uploads"))
+os.environ.setdefault("STORAGE_BACKEND", "local")
+os.environ.setdefault("STORAGE_LOCAL_ROOT", os.path.join(_TEST_TMP, "storage"))
+os.environ.setdefault("STORAGE_SIGNING_SECRET", "test-signing-secret")
 
 
 @pytest.fixture()
@@ -116,24 +118,32 @@ def stub_pipeline(monkeypatch):
     def fake_normalize(inp, out, target_dBFS=None):
         return False
 
+    # Patch at CLASS level only. The pipeline's singletons (pl._audio, the
+    # registry's providers) resolve these through the class, so class patches
+    # reach them. Do NOT monkeypatch the singleton instances after patching
+    # the class: monkeypatch would capture the already-patched class value as
+    # the "original" and permanently freeze the stub onto the singleton at
+    # teardown — any real-audio test running after a stubbed one then silently
+    # runs stubbed (found 2026-08-12; see docs/remediation/FOUND.md).
     monkeypatch.setattr(AudioUtils, "merge_audio_files", staticmethod(fake_merge))
     monkeypatch.setattr(AudioUtils, "qc_check", staticmethod(fake_qc))
     monkeypatch.setattr(AudioUtils, "export_m4b", staticmethod(fake_m4b))
     monkeypatch.setattr(AudioUtils, "concat_audio_files", staticmethod(fake_concat))
     monkeypatch.setattr(AudioUtils, "normalize_audio", staticmethod(fake_normalize))
-    # Patch the already-instantiated pipeline singletons too.
-    import jobs.pipeline as pl
-    monkeypatch.setattr(pl._audio, "merge_audio_files", fake_merge)
-    monkeypatch.setattr(pl._audio, "qc_check", fake_qc)
-    monkeypatch.setattr(pl._audio, "export_m4b", fake_m4b)
-    monkeypatch.setattr(pl._audio, "concat_audio_files", fake_concat)
-    monkeypatch.setattr(pl._audio, "normalize_audio", fake_normalize)
-    # Keep edge available too (some tests use it directly via monkeypatch).
     from services.providers.edge_provider import EdgeProvider
     monkeypatch.setattr(EdgeProvider, "is_available", lambda self: True)
     monkeypatch.setattr(EdgeProvider, "synthesize",
                         lambda self, text, voice_id, engine="neural": b"ID3fakeaudio" + text[:8].encode())
-    monkeypatch.setattr(pl._registry.get("edge"), "is_available", lambda: True)
-    monkeypatch.setattr(pl._registry.get("edge"), "synthesize",
-                        lambda text, voice_id, engine="neural": b"ID3fake" + text[:8].encode())
+    # Defensively drop any instance attributes that would shadow the class
+    # patches (left over from the pre-fix behavior within a process).
+    import jobs.pipeline as pl
+    _stub_names = ("merge_audio_files", "qc_check", "export_m4b",
+                   "concat_audio_files", "normalize_audio")
+    for _n in _stub_names:
+        if _n in vars(pl._audio):
+            delattr(pl._audio, _n)
+    _edge = pl._registry.get("edge")
+    for _n in ("is_available", "synthesize"):
+        if _n in vars(_edge):
+            delattr(_edge, _n)
     yield

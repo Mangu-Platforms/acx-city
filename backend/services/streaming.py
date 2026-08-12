@@ -162,7 +162,8 @@ class AudioStreamer:
             raise RuntimeError("ProviderRegistry not configured on AudioStreamer")
 
         # Truncate text to approximate the requested duration.
-        max_chars = int(duration_s * 12.5)  # ~12.5 chars/s spoken English
+        from utils.audio_utils import CHARS_PER_SECOND
+        max_chars = int(duration_s * CHARS_PER_SECOND)
         truncated = text[:max_chars].strip()
         if not truncated:
             raise ValueError("Preview text is empty after truncation")
