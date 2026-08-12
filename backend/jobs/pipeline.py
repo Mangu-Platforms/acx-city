@@ -22,6 +22,7 @@ from billing import mark_stage, record_usage, stage_done
 from db.base import utcnow
 from db.models import ChapterResult, ChapterStatus, Job
 from jobs.queue import LeaseLost  # re-export so callers import from one place
+from services.lexicon import apply_lexicon_plain, load_lexicon_entries
 from services.media_validation import (
     MediaValidationError, QC_POLICY_VERSION, validate_media,
 )
@@ -221,6 +222,12 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
             )
         else:
             clean = _text.preprocess_text(chapter["text"])
+            # P1.3: the default path applies the project lexicon as plain
+            # phonetic replacement — an edit changes the synthesis text, so
+            # it changes the cache key, so it changes the audio.
+            lexicon_entries = load_lexicon_entries(session, job.project_id)
+            if lexicon_entries:
+                clean = apply_lexicon_plain(clean, lexicon_entries)
         if not clean:
             row.status = ChapterStatus.skipped
             session.commit()

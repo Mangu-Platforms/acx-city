@@ -154,6 +154,21 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
   `healthcheck.py`. The compose `redis` service and `REDIS_URL` envs remain;
   P1.8 (health rewrite) should decide whether Redis stays or goes.
 
+## 2026-08-12 (P1.3 session)
+
+- **Two parallel character-casting systems exist.** The `/api/projects/:id/
+  characters` CRUD (`CharacterVoiceMap`) feeds only the flag-gated
+  multi-agent tagger; synthesis voices come from the separate Voice City
+  casting path (`voice_direction.cast` at synthesize time, snapshotted per
+  job). P1.3 proved audibility through the Voice City path. Unifying them
+  (CharacterVoiceMap as the default cast source at job creation) is design
+  debt for P2 — not fixed here per ground rule 5.
+- **Pipeline-path lexicon emits `[pron:…]` tags into the synthesis text.**
+  With PIPELINE_ENABLED=true and a plain provider, tags would be read
+  aloud. The default path (P1.3) uses plain phonetic replacement instead;
+  the tag consumer only exists in the flag-gated world. Logged, not fixed —
+  the pipeline is flag-gated off.
+
 ### Open items (need user action or a later phase)
 
 1. **P0.4 CI enforcement missing.** `python scripts/gen_ts_types.py --check`
