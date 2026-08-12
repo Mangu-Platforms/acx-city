@@ -134,6 +134,19 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr(EdgeProvider, "is_available", lambda self: True)
     monkeypatch.setattr(EdgeProvider, "synthesize",
                         lambda self, text, voice_id, engine="neural": b"ID3fakeaudio" + text[:8].encode())
+    # Media validation (P1.1) is a module-level function in jobs.pipeline;
+    # stubbed tests produce fake bytes, so validation must be stubbed with
+    # the rest of the audio layer. This is a function patch on the module
+    # namespace — no singleton involved, so no freeze hazard.
+    from services.media_validation import MediaValidationResult
+    import jobs.pipeline as _pl_for_validation
+    monkeypatch.setattr(
+        _pl_for_validation, "validate_media",
+        lambda path, expected_chars=None, expected_extra_s=0.0: MediaValidationResult(
+            ok=True, reason=None, detail="stubbed",
+            header_duration_s=12.0, decoded_duration_s=12.0, dbfs=-20.0,
+        ),
+    )
     # Defensively drop any instance attributes that would shadow the class
     # patches (left over from the pre-fix behavior within a process).
     import jobs.pipeline as pl

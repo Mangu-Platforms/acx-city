@@ -7,11 +7,17 @@ from db.session import session_scope
 
 @pytest.fixture()
 def failing_qc(monkeypatch):
-    """Make QC report a failure so the gate triggers."""
-    import jobs.pipeline as pl
+    """Make QC report a failure so the gate triggers.
+
+    Patches the CLASS, never the pl._audio instance: instance-patching after
+    stub_pipeline's class patch makes monkeypatch capture the stub as the
+    "original" and freeze it onto the singleton at teardown (FOUND.md,
+    2026-08-12).
+    """
+    from utils.audio_utils import AudioUtils
     bad = {"duration_s": 0.5, "loudness_dbfs": -50.0, "peak_dbfs": -3.0,
            "silence_ratio": 0.0, "clipping": False, "issues": ["too short"], "passed": False}
-    monkeypatch.setattr(pl._audio, "qc_check", lambda p: bad)
+    monkeypatch.setattr(AudioUtils, "qc_check", staticmethod(lambda p: bad))
 
 
 def _enqueue(client, headers):

@@ -49,7 +49,7 @@ _MARKER_RE = re.compile(r"\[fake:([a-z_]+)\]")
 
 ARTIFACT_MODES = frozenset({
     "success", "invalid_audio", "truncated_audio", "silent_audio",
-    "wrong_duration", "wrong_format",
+    "wrong_duration", "wrong_format", "quiet_audio", "gappy_audio",
 })
 ERROR_MODES = frozenset({"temporary_failure", "permanent_failure", "rate_limited"})
 
@@ -83,6 +83,10 @@ class FakeSpeechProvider(SpeechProvider):
 
     def __init__(self) -> None:
         self.mode = "success"
+        # Optional per-call script: each synthesize() consumes one entry,
+        # overriding markers and self.mode. Lets tests force e.g. one bad
+        # artifact followed by success on the retry.
+        self.mode_sequence: Optional[list] = None
         self.fail_after_n_calls: Optional[int] = None
         self.calls = 0
         self._temporarily_failed: set = set()
@@ -140,12 +144,12 @@ class FakeSpeechProvider(SpeechProvider):
         return self._artifact(mode, clean, voice_id, salt)
 
     def _resolve_mode(self, text: str) -> Tuple[str, str]:
-        m = _MARKER_RE.search(text)
-        if m:
-            mode = m.group(1)
-            clean = _MARKER_RE.sub("", text)
+        clean = _MARKER_RE.sub("", text)
+        if self.mode_sequence:
+            mode = self.mode_sequence.pop(0)
         else:
-            mode, clean = self.mode, text
+            m = _MARKER_RE.search(text)
+            mode = m.group(1) if m else self.mode
         if mode not in ARTIFACT_MODES and mode not in ERROR_MODES:
             raise RuntimeError(f"fake provider: unknown mode {mode!r}")
         return mode, clean
@@ -177,6 +181,26 @@ class FakeSpeechProvider(SpeechProvider):
             data = self._silence_mp3(duration)
         elif mode == "wrong_format":
             data = self._sine_wav(freq, duration)
+        elif mode == "gappy_audio":
+            # 30% tone + 70% trailing silence, correct total duration: passes
+            # media validation (audible, plausible, complete) but fails QC's
+            # silence-ratio rule — and loudness normalization can't fix
+            # silence, so it exercises the QC gate with REAL audio.
+            tone_s = max(duration * 0.3, 0.2)
+            pad_s = max(duration - tone_s, 0.0)
+            data = self._render(
+                ["-f", "lavfi",
+                 "-i", f"sine=frequency={freq}:duration={tone_s:.3f}",
+                 "-af", f"apad=pad_dur={pad_s:.3f}",
+                 "-ac", "1", "-ar", "24000", "-b:a", "64k"], suffix=".mp3")
+        elif mode == "quiet_audio":
+            # ~-51 dBFS: passes media validation's silent rule (-60) but
+            # fails QC's loudness warning (-45) — real-audio QC-gate tests.
+            data = self._render(
+                ["-f", "lavfi",
+                 "-i", f"sine=frequency={freq}:duration={duration:.3f}",
+                 "-af", "volume=-30dB",
+                 "-ac", "1", "-ar", "24000", "-b:a", "64k"], suffix=".mp3")
         elif mode == "truncated_audio":
             full = self._sine_mp3(freq, duration)
             data = full[: max(int(len(full) * 0.4), 512)]
@@ -206,6 +230,7 @@ class FakeSpeechProvider(SpeechProvider):
 
     @staticmethod
     def _render(args: List[str], suffix: str) -> bytes:
+        # (shared by FakeSpeechProvider and FakePaidSpeechProvider)
         # Write to a real file, not a pipe: ffmpeg needs a seekable output to
         # finalize the MP3 Xing header, which the truncation-detection rule
         # (header duration vs. decoded duration) depends on.
@@ -214,3 +239,18 @@ class FakeSpeechProvider(SpeechProvider):
             _run_ffmpeg([*args, out])
             with open(out, "rb") as f:
                 return f.read()
+
+
+class FakePaidSpeechProvider(FakeSpeechProvider):
+    """Paid twin of the fake provider (P1.1).
+
+    Identical audio behavior, but paid=True with a non-zero rate so tests can
+    assert on the UsageEvent ledger — the canonical duplicate-work metric.
+    A job-level counter cannot prove per-org ledger correctness; this can.
+    """
+
+    name = "fake-paid"
+    display_name = "Fake (paid test)"
+    paid = True
+    cost_per_million_chars = 16.0
+    catalog_discoverable = False

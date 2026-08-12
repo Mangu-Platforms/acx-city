@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 
 from .base import SpeechProvider
 from .edge_provider import EdgeProvider
-from .fake_provider import FakeSpeechProvider
+from .fake_provider import FakePaidSpeechProvider, FakeSpeechProvider
 from .polly_provider import PollyProvider
 from .voice_city_provider import VoiceCityProvider
 
@@ -11,7 +11,8 @@ from .voice_city_provider import VoiceCityProvider
 class ProviderRegistry:
     def __init__(self):
         self._providers: Dict[str, SpeechProvider] = {}
-        for provider in (EdgeProvider(), PollyProvider(), VoiceCityProvider(), FakeSpeechProvider()):
+        for provider in (EdgeProvider(), PollyProvider(), VoiceCityProvider(),
+                         FakeSpeechProvider(), FakePaidSpeechProvider()):
             self._providers[provider.name] = provider
 
     def get(self, name: str) -> Optional[SpeechProvider]:

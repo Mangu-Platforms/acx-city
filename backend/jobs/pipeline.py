@@ -22,6 +22,9 @@ from billing import mark_stage, record_usage, stage_done
 from db.base import utcnow
 from db.models import ChapterResult, ChapterStatus, Job
 from jobs.queue import LeaseLost  # re-export so callers import from one place
+from services.media_validation import (
+    MediaValidationError, QC_POLICY_VERSION, validate_media,
+)
 from services.providers import ProviderRegistry
 from services.synthesis_cache import SynthesisCache
 from services.text_processor import TextProcessor
@@ -81,12 +84,17 @@ def _upload_chapter_audio(
         audio_bytes_data = f.read()
     sha256 = hashlib.sha256(audio_bytes_data).hexdigest()
 
-    qc = _audio.qc_check(audio_path)
-    if not qc.get("duration_s"):
-        raise ValueError(f"Chapter {chapter_index}: audio has no decodable duration")
-
+    # Media validation runs upstream (P1.1); by the time we upload, the
+    # artifact has already been validated. Upload, then VERIFY the write:
+    # a chapter is durable only if storage returns exactly what we hashed.
     key = _output_key(job, f"chapters/{chapter_index:03d}.mp3")
     storage.put_bytes(key, audio_bytes_data, content_type="audio/mpeg")
+    echoed = storage.get_bytes(key)
+    if hashlib.sha256(echoed).hexdigest() != sha256:
+        raise RuntimeError(
+            f"Chapter {chapter_index}: storage verify failed for {key} "
+            f"(stored bytes differ from uploaded bytes)"
+        )
 
     chapter_row.audio_key = key
     chapter_row.audio_sha256 = sha256
@@ -185,13 +193,21 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                     log.warning("chapter %d storage checksum mismatch; re-synthesizing", i)
                 except Exception as e:
                     log.warning("failed to fetch chapter %d from storage: %s; falling back", i, e)
-            # Fallback: local disk (works when storage unavailable or not yet uploaded).
+            # Fallback: local disk (works when storage unavailable or not yet
+            # uploaded). Unlike the storage copy, a local leftover carries no
+            # checksum — validate before letting it anywhere near assembly.
             path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
             if os.path.exists(path):
-                chapter_files.append(path)
-                chapter_titles.append(chapter["title"])
-                log.info("resumed chapter %d from local disk", i)
-                continue
+                check = validate_media(path)
+                if check.ok:
+                    chapter_files.append(path)
+                    chapter_titles.append(chapter["title"])
+                    log.info("resumed chapter %d from local disk", i)
+                    continue
+                log.warning(
+                    "chapter %d local leftover failed media validation (%s); "
+                    "re-synthesizing", i, check.reason,
+                )
 
         row.status = ChapterStatus.processing
         job.current_chapter = i + 1
@@ -272,18 +288,57 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
             chunk_synthesis_id = hashlib.sha256(
                 f"{task_provider.name}:{task_voice_id}:{job.engine}:{rendered_chunk}".encode()
             ).hexdigest()[:32]
+            chunk_path = None
             cached = _cache.get(key)
             if cached:
-                chunk_files.append(cached)
-                row.cached_chunks += 1
-                job.cached_chunks += 1
-            else:
-                audio = _synthesize_with_retry(
-                    task_provider, rendered_chunk, task_voice_id, job.engine,
-                    render_plan=render_plan,
-                )
-                chunk_files.append(_cache.put(key, audio))
+                # A cache entry is an unvalidated artifact with a persistence
+                # guarantee — validate on HIT, not just on fresh synthesis;
+                # otherwise one poisoned entry is silently reused forever.
+                check = validate_media(cached, expected_chars=len(rendered_chunk))
+                if check.ok:
+                    chunk_path = cached
+                    row.cached_chunks += 1
+                    job.cached_chunks += 1
+                else:
+                    log.warning(
+                        "chapter %d: cache hit failed media validation (%s: %s); "
+                        "evicting and re-synthesizing", i, check.reason, check.detail,
+                    )
+                    _cache.evict(key)
+            if chunk_path is None:
+                # Fresh synthesis: a rejected artifact triggers exactly one
+                # retry, then hard-fails this job attempt (queue-level
+                # attempts provide further retries with backoff).
+                last_check = None
+                for validation_attempt in (1, 2):
+                    audio = _synthesize_with_retry(
+                        task_provider, rendered_chunk, task_voice_id, job.engine,
+                        render_plan=render_plan,
+                    )
+                    candidate = _cache.put(key, audio)
+                    last_check = validate_media(
+                        candidate, expected_chars=len(rendered_chunk)
+                    )
+                    if last_check.ok:
+                        chunk_path = candidate
+                        break
+                    _cache.evict(key)
+                    log.warning(
+                        "chapter %d: synthesized chunk rejected by media "
+                        "validation (%s: %s), attempt %d/2",
+                        i, last_check.reason, last_check.detail, validation_attempt,
+                    )
+                if chunk_path is None:
+                    row.status = ChapterStatus.pending
+                    session.commit()
+                    raise MediaValidationError(
+                        last_check.reason,
+                        f"chapter {i + 1}: chunk audio rejected after retry "
+                        f"({last_check.reason}: {last_check.detail})",
+                    )
                 job.synthesized_chunks += 1
+                # Bill only validated audio: a rejected artifact must never
+                # create a UsageEvent.
                 if task_provider.paid:
                     record_usage(
                         session, job.organization_id, task_provider.name,
@@ -291,6 +346,7 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
                         job_id=job.id,
                         synthesis_id=chunk_synthesis_id,
                     )
+            chunk_files.append(chunk_path)
 
         chapter_path = os.path.join(task_dir, f"chapter_{i:03d}.mp3")
         # Fix #3: always go through merge_audio_files (even for 1 chunk) so
@@ -307,6 +363,26 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         else:
             log.warning("loudness normalization failed for chapter %d; using raw audio", i + 1)
 
+        # P1.1 ordering (fixes the P0.2 spec error): synthesize → validate →
+        # upload → verify → only then append to assembly and mark done. A
+        # chapter that fails any step must not be reachable by assembly in
+        # this run.
+        expected_chapter_chars = sum(len(rc) for _, rc, _, _, _ in render_tasks)
+        gap_extra_s = 0.4 * max(len(chunk_files) - 1, 0)
+        check = validate_media(
+            chapter_path,
+            expected_chars=expected_chapter_chars,
+            expected_extra_s=gap_extra_s,
+        )
+        if not check.ok:
+            row.status = ChapterStatus.pending
+            session.commit()
+            raise MediaValidationError(
+                check.reason,
+                f"chapter {i + 1} failed media validation after assembly "
+                f"({check.reason}: {check.detail})",
+            )
+
         qc = _audio.qc_check(chapter_path)
         row.duration_s = qc.get("duration_s")
         row.loudness_dbfs = qc.get("loudness_dbfs")
@@ -315,25 +391,29 @@ def run_job(session: Session, job: Job, should_continue: Callable[[], bool]) -> 
         row.clipping = qc.get("clipping")
         row.qc_passed = qc.get("passed")
         row.qc_issues = "\n".join(qc.get("issues", []))
-        row.status = ChapterStatus.done
+        row.qc_policy_version = QC_POLICY_VERSION
 
+        # Upload + verify BEFORE the chapter becomes done or joins assembly.
+        try:
+            _upload_chapter_audio(job, row, i, chapter_path)
+        except Exception as e:
+            log.error(
+                "failed to upload/verify chapter %d: %s; chapter stays pending "
+                "and this attempt fails", i, e,
+            )
+            row.status = ChapterStatus.pending
+            row.audio_key = None
+            row.audio_sha256 = None
+            session.commit()
+            raise
+        mark_stage(session, job.id, i, "upload")
+
+        row.status = ChapterStatus.done
         chapter_files.append(chapter_path)
         chapter_titles.append(chapter["title"])
         job.progress = int(10 + (i + 1) * progress_per_chapter)
         job.updated_at = utcnow()
         session.commit()  # durable per-chapter checkpoint
-
-        # Upload to object storage so a container restart can resume without re-synthesizing.
-        try:
-            _upload_chapter_audio(job, row, i, chapter_path)
-            mark_stage(session, job.id, i, "upload")
-            session.commit()
-        except Exception as e:
-            log.error("failed to upload chapter %d to storage: %s; will re-synthesize on retry", i, e)
-            row.status = ChapterStatus.pending
-            row.audio_key = None
-            row.audio_sha256 = None
-            session.commit()
 
     if not chapter_files:
         raise RuntimeError("No audio was produced (empty input?)")

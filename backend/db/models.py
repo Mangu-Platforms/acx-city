@@ -227,6 +227,9 @@ class ChapterResult(Base):
     clipping: Mapped[Optional[bool]] = mapped_column(Boolean)
     qc_passed: Mapped[Optional[bool]] = mapped_column(Boolean)
     qc_issues: Mapped[Optional[str]] = mapped_column(Text)  # newline-joined
+    # Which validation+QC profile built this chapter (P1.1) — books made
+    # under an older policy stay interpretable when thresholds change.
+    qc_policy_version: Mapped[Optional[str]] = mapped_column(String(32))
 
     # Durable chapter artifacts (P0.2)
     audio_key: Mapped[Optional[str]] = mapped_column(String(512))

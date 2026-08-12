@@ -117,10 +117,30 @@ fake + shaped failure modes) → re-run P0.8 with a live decodability assertion
    cache hits, and a validation failure must invalidate the implicated cache
    entries before retrying — otherwise a poisoned entry retries forever.
 4. **`_upload_chapter_audio` failure keeps the bad chapter in the current
-   run's assembly.** `chapter_files` is appended before the upload/validation
-   try/except (pipeline.py:320 vs :328); on failure the row is reset to
-   pending for the *next* run, but the in-memory path still feeds *this*
-   run's final MP3/M4B. P1.1's validate-before-done ordering fixes this.
+   run's assembly — P0.2 spec error, confirmed by the author 2026-08-12.**
+   `chapter_files` is appended before the upload/validation try/except
+   (pipeline.py:320 vs :328); on failure the row is reset to pending for the
+   *next* run, but the in-memory path still feeds *this* run's final MP3/M4B.
+   The P0.2 spec prescribed exactly this ordering ("Call the upload after the
+   per-chapter session.commit()"). Correct ordering, in P1.1 scope:
+   synthesize → validate → upload → verify → only then append to the
+   assembly list and mark done.
+5. **Post-fix honest test baseline: 169 passed, 1 skipped** (74.6s,
+   2026-08-12, after the teardown fix and cache purge). The previous "156
+   passed" was measured under the broken fixture. 169 = 156 + 13 new P1.0
+   tests — no previously-passing test broke once the stubs stopped leaking,
+   so the old suite's *state-machine* coverage was sound; it was the audio
+   layer that was never tested.
+
+### Deployment exposure (user deciding; logged for the record)
+
+- **Branch protection is now blocked on the billing lock** — required checks
+  that cannot start would wall off `main` entirely. User holds off until CI
+  produces a run with non-zero steps.
+- **Vercel auto-deploys `main` to production on every push with no test
+  gate.** Combined with CI never running, everything pushed since 2026-08-07
+  reached production unverified. Pausing auto-deploy is the user's call; not
+  a blocker for the remediation program.
 
 ### Open items (need user action or a later phase)
 

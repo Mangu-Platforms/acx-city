@@ -18,11 +18,11 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | Signup / login | Yes | Yes | Yes | Yes | n/a | Yes | **Yes** | `app.py:193-235`; `test_e2e_golden_path.py` |
 | Upload manuscript | Yes | Yes | Yes | Yes | n/a | Yes | **Yes** | `app.py:252`; `test_e2e_epub_upload.py::test_upload_file` |
 | Generate audiobook (single voice) | Yes | Yes | Yes | Yes | Yes | Yes | **Yes** | `test_golden_path_real_audio_decodable`: real synthesis+assembly, ffprobe decode, duration plausibility (P1.0) |
-| Chapter progress / resume | — | Yes | Yes | Yes | Yes | Partial | **No** | Resume E2E (`test_restart_resumes_completed_chapters`) exercises the state machine over stubbed bytes; no real-audio resume E2E yet (re-earn in P1.1) |
+| Chapter progress / resume | — | Yes | Yes | Yes | Yes | Yes | **Yes** | `test_resume_reuses_storage_audio_without_rebilling` (P1.1): real audio, task dir + cache wiped, zero new UsageEvents, re-assembled export decodes |
 | MP3 export | Yes | Yes | Yes | Yes | Yes | Yes | **Yes** | `test_golden_path_real_audio_decodable`: export downloaded via signed URL, decodes via ffprobe (P1.0) |
 | M4B export | Yes | Yes | Yes | Yes | Yes | Yes | **Yes** | `test_golden_path_real_audio_decodable`: M4B decodes; chapter atoms count+order verified (P1.0) |
 | Job cancel | Yes | Yes | Yes | Yes | n/a | Yes | **Yes** | `app.py:409`; `test_e2e_golden_path.py::test_golden_path_cancel` |
-| QC gate + human review | Partial | Yes | Yes | Yes | n/a | Partial | **No** | Policy logic E2E passes fabricated QC dicts (`test_qc_gate.py` patches `qc_check`); real QC runs only in golden-path warn mode. Re-earn in P1.1 with a real silent-chapter block test |
+| QC gate + human review | Partial | Yes | Yes | Yes | n/a | Yes | **Yes** | `test_qc_block_holds_job_on_real_gappy_audio` (P1.1): block policy holds real high-silence audio; warn passes it; approve/reject flow in `test_qc_gate.py` |
 | Usage / quota ledger | Partial | Yes | Yes | Yes | Yes | Yes | **Yes** | P0.6 idempotent `record_usage(synthesis_id=…)`; `tests/test_billing.py` |
 | Signed-URL download | Yes | Yes | Yes | Yes | n/a | Yes | **Yes** | `test_golden_path_real_audio_decodable` follows the signed URL and decodes the fetched bytes (P1.0) |
 | Character detection | Yes | `/api` | Yes | Yes | n/a | Yes | **Yes** | `api/voxengine.py:46-69`; `test_e2e_voxengine.py::test_character_lifecycle` |
@@ -51,3 +51,4 @@ This matrix is the release gate for ACX City. A feature cannot ship until its ro
 | **P0.7** | `FakeSpeechProvider` | ✅ Complete | 2026-08-08 |
 | **P0.8** | Golden-path E2E test in CI | ⚠️ Re-done 2026-08-12 | Original gate unmet: no decodability assertion existed and CI never ran (billing lock). Honest gate landed with P1.0 |
 | **P1.0** | FakeSpeechProvider emits real decodable audio; live decodability assertion in the golden path; matrix re-audit | ✅ Complete | 2026-08-12 |
+| **P1.1** | Media validation before QC (validate → upload → verify → done ordering), cache-hit validation + eviction, `qc_policy_version`, paid fake twin | ✅ Complete | 2026-08-12 |

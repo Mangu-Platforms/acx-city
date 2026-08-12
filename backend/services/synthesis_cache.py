@@ -29,6 +29,17 @@ class SynthesisCache:
             return path
         return None
 
+    def evict(self, key: str) -> None:
+        """Remove a poisoned/stale entry so the next lookup re-synthesizes.
+
+        A cache entry is an unvalidated artifact with a persistence
+        guarantee; media validation (P1.1) evicts on any failed hit.
+        """
+        try:
+            os.remove(self._path(key))
+        except FileNotFoundError:
+            pass
+
     def put(self, key: str, audio: bytes) -> str:
         path = self._path(key)
         tmp = path + ".tmp"
