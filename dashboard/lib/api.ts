@@ -95,6 +95,54 @@ export interface CacheStats {
   bytes: number
 }
 
+// ── P1.7 observational ops types (matching /api/ops/pipeline) ───────────────
+
+export interface OpsWorker {
+  worker_id: string
+  last_seen: string
+  age_s: number
+  stale: boolean
+  current_job_id: string | null
+}
+
+export interface OpsRecentJob {
+  job_id: string
+  status: JobStatus
+  progress: number
+  attempts: number
+  provider: string
+  cached_chunks: number
+  synthesized_chunks: number
+  error: string | null
+  updated_at: string
+}
+
+export interface OpsProvider {
+  name: string
+  display_name: string
+  available: boolean
+  paid: boolean
+}
+
+export interface PipelineOverview {
+  queue: { queued: number; running: number; needs_review: number; failed: number; stuck: number }
+  workers: OpsWorker[]
+  recent_jobs: OpsRecentJob[]
+  failed_chapters: number
+  qc_failures: number
+  recent_exports: { job_id: string; formats: string[]; updated_at: string }[]
+  cache_hit_rate: number | null
+  avg_job_duration_s: number | null
+  providers: OpsProvider[]
+  storage: { ok: boolean; backend: string }
+}
+
+export interface StageRecord {
+  chapter_index: number
+  stage: string
+  completed_at: string
+}
+
 export interface AuthResponse {
   token: string
   user: { id: string; email: string; display_name?: string }
@@ -139,4 +187,9 @@ export const api = {
   usage: () => req<UsageResponse>('/api/usage'),
 
   cacheStats: () => req<CacheStats>('/api/cache/stats'),
+
+  pipelineOverview: () => req<PipelineOverview>('/api/ops/pipeline'),
+
+  jobStages: (id: string) =>
+    req<{ job_id: string; stages: StageRecord[] }>(`/api/jobs/${id}/stages`),
 }

@@ -701,6 +701,156 @@ def generate_epub():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/ops/pipeline", methods=["GET"])
+@require_auth
+def ops_pipeline():
+    """Observational pipeline overview for the dashboard (P1.7).
+
+    Job/chapter/export data is org-scoped to the caller; worker, provider,
+    and storage health are shared infrastructure. Read-only by design.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from db.base import utcnow as _utcnow
+    from db.models import ChapterResult, ChapterStatus, WorkerHeartbeat
+
+    identity = current_identity()
+    org_id = identity.org.id
+    now = _utcnow()
+    db = g.db
+
+    def _count_jobs(*conds):
+        return db.execute(
+            select(func.count()).select_from(Job)
+            .where(Job.organization_id == org_id, *conds)
+        ).scalar()
+
+    stuck_cutoff = now - timedelta(minutes=10)
+    queue = {
+        "queued": _count_jobs(Job.status == JobStatus.queued),
+        "running": _count_jobs(Job.status == JobStatus.running),
+        "needs_review": _count_jobs(Job.status == JobStatus.needs_review),
+        "failed": _count_jobs(Job.status == JobStatus.failed),
+        "stuck": _count_jobs(Job.status == JobStatus.running,
+                             Job.updated_at < stuck_cutoff),
+    }
+
+    def _aware(dt):
+        from datetime import timezone
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    workers = []
+    for hb in db.execute(select(WorkerHeartbeat)).scalars():
+        age_s = int((now - _aware(hb.last_seen)).total_seconds())
+        workers.append({
+            "worker_id": hb.worker_id,
+            "last_seen": hb.last_seen.isoformat(),
+            "age_s": age_s,
+            "stale": age_s > 90,
+            "current_job_id": hb.current_job_id,
+        })
+
+    recent = db.execute(
+        select(Job).where(Job.organization_id == org_id)
+        .order_by(Job.updated_at.desc()).limit(20)
+    ).scalars().all()
+    recent_jobs = [{
+        "job_id": j.id,
+        "status": j.status.value,
+        "progress": j.progress,
+        "attempts": j.attempts,
+        "provider": j.provider,
+        "cached_chunks": j.cached_chunks,
+        "synthesized_chunks": j.synthesized_chunks,
+        "error": j.error,
+        "updated_at": j.updated_at.isoformat(),
+    } for j in recent]
+
+    failed_chapters = db.execute(
+        select(func.count()).select_from(ChapterResult).join(Job)
+        .where(Job.organization_id == org_id,
+               ChapterResult.status == ChapterStatus.failed)
+    ).scalar()
+    qc_failures = db.execute(
+        select(func.count()).select_from(ChapterResult).join(Job)
+        .where(Job.organization_id == org_id,
+               ChapterResult.qc_passed.is_(False))
+    ).scalar()
+
+    recent_exports = [{
+        "job_id": j.id,
+        "formats": [f for f, k in (("mp3", j.output_mp3_key),
+                                   ("m4b", j.output_m4b_key)) if k],
+        "updated_at": j.updated_at.isoformat(),
+    } for j in recent if j.output_mp3_key or j.output_m4b_key][:10]
+
+    totals = db.execute(
+        select(func.coalesce(func.sum(Job.cached_chunks), 0),
+               func.coalesce(func.sum(Job.synthesized_chunks), 0))
+        .where(Job.organization_id == org_id)
+    ).one()
+    cached_total, synth_total = int(totals[0]), int(totals[1])
+    cache_hit_rate = (
+        cached_total / (cached_total + synth_total)
+        if (cached_total + synth_total) else None
+    )
+
+    done_jobs = [j for j in recent if j.status == JobStatus.succeeded]
+    latencies = [(j.updated_at - j.created_at).total_seconds() for j in done_jobs]
+    avg_latency_s = round(sum(latencies) / len(latencies), 1) if latencies else None
+
+    providers = []
+    for p in registry.describe_all():
+        prov = registry.get(p.get("name", ""))
+        providers.append({**p, "available": bool(prov and prov.is_available())})
+
+    storage = get_storage()
+    probe_key = f"ops/probe/{org_id}.bin"
+    try:
+        storage.put_bytes(probe_key, b"ok", content_type="application/octet-stream")
+        storage_ok = storage.get_bytes(probe_key) == b"ok"
+    except Exception:
+        storage_ok = False
+
+    return jsonify({
+        "queue": queue,
+        "workers": workers,
+        "recent_jobs": recent_jobs,
+        "failed_chapters": failed_chapters,
+        "qc_failures": qc_failures,
+        "recent_exports": recent_exports,
+        "cache_hit_rate": cache_hit_rate,
+        "avg_job_duration_s": avg_latency_s,
+        "providers": providers,
+        "storage": {"ok": storage_ok, "backend": type(storage).__name__},
+    })
+
+
+@app.route("/api/jobs/<job_id>/stages", methods=["GET"])
+@require_auth
+def job_stage_timeline(job_id):
+    """Full stage timeline for a job (P1.7 job detail)."""
+    from sqlalchemy import select
+
+    from db.models import JobStage
+
+    job = _get_owned_job(job_id)
+    rows = g.db.execute(
+        select(JobStage).where(JobStage.job_id == job.id)
+        .order_by(JobStage.chapter_index, JobStage.completed_at)
+    ).scalars().all()
+    return jsonify({
+        "job_id": job.id,
+        "stages": [{
+            "chapter_index": r.chapter_index,
+            "stage": r.stage_name,
+            "completed_at": r.completed_at.isoformat(),
+        } for r in rows],
+    })
+
+
 @app.route("/api/jobs/<job_id>/manifest", methods=["GET"])
 @require_auth
 def job_manifest(job_id):
